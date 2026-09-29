@@ -125,6 +125,7 @@ function setBadges(info) {
     ['cpp-httplib', info['cpp-httplib'], 'badge'],
     ['webview', info.webview, 'badge'],
     ['cpp-embedlib', info['cpp-embedlib'], 'badge'],
+    ['nlohmann/json', info['nlohmann/json'], 'badge'],
     ['os', info.os, 'badge'],
     [`已连接 ${location.origin}`, `PID ${info.pid}`, 'badge badge--ok'],
   ];
