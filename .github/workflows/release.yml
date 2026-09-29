@@ -53,12 +53,15 @@ jobs:
       - name: 发布 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 这个 job 没有 checkout，gh 自己找不到仓库上下文，必须显式给
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          extra=()
-          case "$GITHUB_REF_NAME" in *-*) extra+=(--prerelease) ;; esac
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            "${extra[@]}" \
-            release/*
+          args=(--title "$GITHUB_REF_NAME" --generate-notes)
+          case "$GITHUB_REF_NAME" in *-*) args+=(--prerelease) ;; esac
+          # 失败时把 gh 的输出逐行贴成 annotation：release 只在推 tag 时跑，
+          # 不看日志很难定位（也方便非维护者从检查页面直接看到原因）
+          if ! gh release create "$GITHUB_REF_NAME" "${args[@]}" release/* 2>&1 | tee /tmp/gh.log; then
+            tail -n 20 /tmp/gh.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
