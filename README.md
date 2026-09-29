@@ -61,6 +61,8 @@ git tag -a v0.1.1 -m "..."   &&   git push origin v0.1.1
 
 tag 名里带连字符的（如 `v0.1.1-rc1`）会自动标成 **Pre-release**，不会顶掉 Latest release。
 
+维护者要发新版本时，具体步骤和出问题怎么回滚见下面的 [**如何发版**](#如何发版)。
+
 ## 目录结构
 
 ```
@@ -342,6 +344,80 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
 | POST | `/api/add` | 表单 `a=..&b=..`，返回和 |
 
 JS → C++ 绑定：`cppNativeEcho(text)`、`cppNativeHandle()`、`cppCloseWindow()`。
+
+## 如何发版
+
+发布是完全「推 tag 触发」的：不需要手工编译，也不需要往网页上拖任何文件。
+
+### 1. 确认要发的提交是绿的
+
+`main` 上最后一次 CI 必须是绿的（看顶上徽章）。发布用的二进制是 CI 从这个 tag
+**现场编出来的**，所以 main 绿 = 发出去的东西就是验证过的那份。
+
+### 2. 定版本号
+
+遵循 SemVer，**tag 名就是版本号**，`v` 前缀不能少（工作流按 `v*` 匹配）：
+
+| 场景 | 例子 |
+| --- | --- |
+| 修 bug / 只改文档 | `v0.1.2`（patch） |
+| 加功能 | `v0.2.0`（minor） |
+| 破坏性改动 | `v1.0.0`（major） |
+| 想先试发一版 | `v0.2.0-rc1` → 自动标成 **Pre-release**，不会顶掉 Latest |
+
+### 3. 写发布说明（推荐，但不强制）
+
+在 `release-notes/vX.Y.Z.md` 里写这个版本要说什么，纯 Markdown，会**原样**成为 Release
+正文。没有这个文件时会退回读根目录 `RELEASE_NOTES.md`，再没有才用 GitHub 自动生成的
+——而自动生成列的是「合并的 PR」，本仓库都是直接 push，所以它只会给一行 changelog
+链接（v0.1.0 当时就是这样），因此建议手写。
+
+可以照抄 `release-notes/v0.1.1.md` 的结构：这次改了什么 / 下载表 / compare 链接。
+
+### 4. 提交 → 推 main → 打 tag
+
+```bash
+git add release-notes/v0.1.2.md          # 说明文件要先提交：publish 读的是 tag 里的内容
+git commit -m "docs: 补上 v0.1.2 的发布说明"
+git push origin main
+
+git tag -a v0.1.2 -m "v0.1.2 - 一句话概括这次发了什么"
+git push origin v0.1.2
+```
+
+`-a` 建议加（注解 tag），`-m` 里那句话就是 tag 自带的一句话摘要。
+
+### 5. 看 Actions → Releases
+
+推 tag 会触发 `release` 工作流：先并行编译两个平台（复用 `build.yml`），再 publish。
+大约 6~8 分钟后，[Releases](https://github.com/leiddev/webview-httplib-demo/releases)
+上应该出现：标题 = tag 名、正文 = 第 3 步写的说明、附件 =
+`webview-demo-<tag>-windows-x64.exe` 和 `webview-demo-<tag>-linux-x64`。
+
+### 出问题了怎么办
+
+- **publish 失败**：不会留下半成品（`gh release create` 要么建好要么不建）。看失败那步的
+  annotation —— 工作流会把 `gh` 的输出逐行贴上来 —— 修完之后删 tag 重推即可：
+
+  ```bash
+  git tag -d v0.1.2
+  git push origin --delete v0.1.2
+  # 改完代码/说明，重新 tag + push
+  ```
+
+- **Release 已经建好、只想改正文或换附件**：网页上 Releases → 该版本 → ✏️ Edit release，
+  改完 Update 就行，**不用**重新发版。
+- **想彻底重发**：先在网页删掉那个 Release，再按上面的步骤删 tag 重推。反过来（先删 tag）
+  会让 Release 变成没有 tag 的孤儿，清理起来更麻烦。
+- **已经发出去的 tag 不要改指向**（别 `push -f` 移动 tag）：老下载链接会指向新的提交内容，
+  和已发出去的二进制对不上。
+
+### 两个容易踩的坑
+
+1. **别给 `build.yml` 的 push 触发再加 `tags`**：现在 tag 只由 `release.yml` 触发，它再
+   `workflow_call` 复用 build.yml。两边都写，同一次 tag 会跑两遍全量构建。
+2. **tag 名会被拼进附件名**：附件是 `webview-demo-${tag}-...`。另外必须能以 `v*` 匹配上，
+   用 `release-0.1.2` 这种前缀的话工作流根本不会触发。
 
 ## 已验证的环境
 
