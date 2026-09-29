@@ -1,0 +1,131 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------- Windows --
+  windows:
+    name: VS2022 x64 Release
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          cmake --version
+          git --version
+
+      - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib / WebView2 SDK）
+        run: cmake --preset x64
+
+      - name: 编译 Release
+        run: cmake --build --preset release
+
+      - name: 检查产物
+        run: |
+          if (-not (Test-Path build/Release/webview-demo.exe)) { throw "产物缺失" }
+          Get-Item build/Release/webview-demo.exe | Format-List Name, Length
+        shell: pwsh
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-demo-win-x64
+          path: build/Release/webview-demo.exe
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------ Linux --
+  linux:
+    name: Ubuntu 22.04 / GCC / Ninja Release
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # Linux 上 webview 会在 configure 阶段就要求 pkg-config + GTK + WebKitGTK；
+      # xvfb 是为了后面能无头启动 GUI 做冒烟测试。
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config ninja-build xvfb
+
+      - name: 环境信息
+        run: |
+          cmake --version
+          g++ --version
+          pkg-config --modversion webkit2gtk-4.1 gtk+-3.0
+
+      - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib）
+        run: cmake --preset linux
+
+      - name: 编译 Release
+        run: cmake --build --preset linux-release
+
+      - name: 检查产物
+        run: |
+          test -x build-linux/webview-demo
+          ls -l build-linux/webview-demo
+          file build-linux/webview-demo
+          ldd build-linux/webview-demo | grep -i webkit
+
+      - name: 冒烟测试（Xvfb 无头运行 + 打接口 + 校验日志）
+        run: |
+          set -eux
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1
+          export WEBKIT_DISABLE_COMPOSITING_MODE=1
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export GDK_BACKEND=x11
+
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            ./build-linux/webview-demo --port 18080 > /tmp/run.log 2>&1 &
+          APP=$!
+
+          # 等 HTTP 服务起来（最多 30 秒）
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null "http://127.0.0.1:18080/api/info"; then break; fi
+            sleep 1
+          done
+
+          echo "--- /api/info ---"
+          curl -sf "http://127.0.0.1:18080/api/info"; echo
+          echo "--- POST /api/add ---"
+          curl -sf -X POST -d 'a=12&b=30' "http://127.0.0.1:18080/api/add"; echo
+          echo "--- 静态资源（cpp-embedlib + mount）---"
+          for u in / /style.css /app.js; do
+            curl -sf -o /dev/null -w "  GET $u -> %{http_code} (%{size_download}B)\n" \
+              "http://127.0.0.1:18080$u"
+          done
+
+          echo "--- 程序日志 ---"
+          cat /tmp/run.log
+
+          # 窗口自己会请求 /app.js，说明 GTK/WebKitGTK 真的把页面加载起来了
+          grep -q 'GET /app.js' /tmp/run.log
+
+          kill "$APP" 2>/dev/null || true
+          pkill -x webview-demo 2>/dev/null || true
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-demo-linux-x64
+          path: build-linux/webview-demo
+          if-no-files-found: error
+
+# 说明：
+# - Windows job 只做「配置 + 编译」，不在 CI 里启动 GUI：
+#   没有交互式桌面会话时 webview 可能创建窗口失败，而失败时会弹模态提示框把任务挂住。
+#   想跑运行时冒烟测试，请在有桌面的机器上执行 build/Release/webview-demo.exe --port 8080。
+# - Linux job 因为有 Xvfb，可以真的把窗口跑起来：断言「程序日志里出现窗口自己发起的
+#   GET /app.js」，就等于验证了 GTK + WebKitGTK 渲染链路是通的。
