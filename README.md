@@ -257,6 +257,11 @@ reply_json(res, json{{"you_said", q}, {"length", q.size()}});
 | `json_text(value)` | 唯一出口，负责 `dump()`。里面固定带 `error_handler_t::replace`（见坑 11） |
 | `first_json_string(args)` | 把 webview 传来的 `["hello"]` 取出第一个字符串，换成 `json::parse(args, nullptr, false)` |
 
+**代价**：CI 上 Linux 的编译步骤从 17 秒变成 21 秒、Windows 没变，
+configure 一步没变（300 KB 的 `include.zip` 下载可以忽略）；
+本机 VS2022 单 TU 实测 +2.9 秒；静态体积 +约 100 KB。这个项目只有一个 `.cpp`，
+所以「nlohmann 编译慢」这件事在这里总共就值几秒。
+
 **行为上唯二的区别**（下一次发版会体现）：
 
 1. `/api/add` 返回 `{"a":12.0,"b":30.0,"sum":42.0}` 而不是 `{"a":12,"b":30,"sum":42}`
@@ -479,28 +484,39 @@ WebKitGTK 2.50.4（`webkit2gtk-4.1`）+ GTK 3.24.33 + libsoup3 · Xvfb
 
 ### Windows 实测记录
 
-`build\Release\webview-demo.exe`，编译 0 警告，约 548 KB：
+`build\Release\webview-demo.exe`，编译 0 警告，**561,664 字节**（CI 的 `windows-latest` 是 VS2026，
+编出来 568,832 字节）：
 
 - 窗口类名 `webview`、客户区 1080×780、标题与 `set_title()` 一致 → 构造 / `set_size` / `set_title` 生效；
 - 服务端日志里先出现 `GET /`、`GET /style.css`、`GET /app.js`（是**窗口自己**来拉的）→ `navigate` 生效、页面渲染成功；
 - 全部 7 个接口 200，`POST /api/add` 返回 `{"a":3.0,"b":4.0,"sum":7.0}`（`double` 的原样输出，见「JSON 处理」）；
+  九个用例（六个接口 + 小数 + 缺参数 400 + 坏 UTF-8）的返回**全部能被 JSON 解析器吃掉**；
 - 注入脚本串起三个绑定：`cppNativeEcho` 返回 `{"source":"webview::bind → C++",…}`、
   `cppNativeHandle` 返回 `HWND = 0x…`、`cppCloseWindow` 之后进程自行退出（ExitCode=0）→
   `bind` / `resolve` / `window` / `terminate` 与 RAII 析构都正常。
 
 ### Linux 实测记录
 
-在 Ubuntu 22.04（无显示器）上把 `git archive HEAD` 的干净快照跑了一遍，
-**不改一行代码**就能配置 + 编译 + 运行：
+在 Ubuntu 22.04（无显示器）上把 `git archive HEAD` 的干净快照跑了一遍：
 
-- **configure 9 秒**，webview 自动选中 `webkit2gtk-4.1` 2.50.4 + `gtk+-3.0` 3.24.33 + libsoup3；
-- **build 17 秒、0 警告**，产出 786,792 字节 ELF，链接 `libwebkit2gtk-4.1` / `libjavascriptcoregtk-4.1`；
+- **configure 146 秒** —— 首次要把四个依赖全从网上下下来，基本全是网络时间；依赖已经在本地时
+  再 configure 是 33 秒。webview 自动选中 `webkit2gtk-4.1` 2.50.4 + `gtk+-3.0` 3.24.33 + libsoup3；
+- **build 22 秒、0 警告**，产出 **944,760 字节** ELF，链接 `libwebkit2gtk-4.1` / `libjavascriptcoregtk-4.1`；
   cpp-embedlib 在 Linux 上正常生成 `_data_index_html` / `_data_app_js` / `_data_style_css` → `libWebAssets.a`；
-- 用 Xvfb 无头运行：7 个接口全 200，`POST /api/add` 返回 `{"a":12.0,"b":30.0,"sum":42.0}`；
+- 用 Xvfb 无头运行（`git archive` 出来那份代码**一行没改**）：7 个接口全 200，
+  `POST /api/add` 返回 `{"a":12.0,"b":30.0,"sum":42.0}`，返回**全部是合法 JSON**，
+  缺参数返回 400，带坏 UTF-8（`?q=%FF%FE`）既不 500 也不吐非法 JSON；
   日志最前面是**窗口自己**发起的 `/`、`/style.css`、`/app.js`、`/api/info` → GTK + WebKitGTK 渲染链路通；
-- JS→C++ 桥在 GTK 后端同样正常：`cppNativeEcho`（中文正常）、
-  `cppNativeHandle` 返回 `GtkWidget * = 0x60C7D2C8C290`、`cppCloseWindow` 之后进程自行退出（exit code 0）；
+- **JS→C++ 桥**在 GTK 后端同样正常。这条 HTTP 断言测不到，所以另外在一个临时副本里塞了段开机自检
+  （只改那份副本的 `app.js`，仓库代码没动）：JS 先 `await cppNativeEcho('自检 he said "hi"\tEND')`，
+  再把**拿到的东西 `JSON.stringify` 之后回传一次**。日志里出现了回传的那次请求，就说明返回值确实
+  被 JS 侧的 `JSON.parse` 吃下去了；`cppNativeHandle` 返回 `GtkWidget * = 0x…`，
+  `cppCloseWindow` 之后进程自行退出（exit code 0）；
 - `localtime_r` 分支正确，返回真实本地时间。
+
+> 两个平台上 `cppNativeEcho` 的 `chars` 都是 **23**、吐出来的 JSON 结构逐字节相同
+> （Windows 那边 `cppNativeHandle` 是 `HWND = 0x…`、Linux 是 `GtkWidget * = 0x…`）——
+> 说明转义、UTF-8、数字格式这些都不依赖平台。
 
 > 同一份代码在 Windows 和 Linux 上的 `/api/info` 分别返回 `"os":"windows"` / `"os":"linux"`
 > 和各自真实的 PID —— 这两处正是这次移植时修掉的平台相关 bug。
