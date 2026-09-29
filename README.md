@@ -1,5 +1,7 @@
 # webview-httplib-demo
 
+[![build](https://github.com/leiddev/webview-httplib-demo/actions/workflows/build.yml/badge.svg)](https://github.com/leiddev/webview-httplib-demo/actions/workflows/build.yml)
+
 用 **cpp-httplib + webview + cpp-embedlib** 搭的最小桌面应用示例（**Windows / Linux** 均已实测，macOS 理论可行但未验证）。
 
 跑起来之后是一个原生窗口，界面是一个本地 HTML 页面，但它不是从磁盘读的——
