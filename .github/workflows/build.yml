@@ -8,6 +8,8 @@ on:
       - 'LICENSE'
   pull_request:
   workflow_dispatch:
+  # 供 release.yml 在推 tag 时复用这两个平台的构建（同一 run，产物可直接下载）
+  workflow_call:
 
 jobs:
   # ---------------------------------------------------------------- Windows --

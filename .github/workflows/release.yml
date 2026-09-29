@@ -1,0 +1,64 @@
+name: release
+
+# 推一个 tag（如 v0.1.0）时：先复用 build.yml 在 Windows / Linux 各编译一次，
+# 再把两份二进制挂到同名 Release 上 —— 这样 Release 里的东西一定是从该 tag 编出来的。
+#
+# 约定（与 GitHub 网页端的 SemVer 惯例一致）：tag 里带连字符的按预发布处理，
+# 例如 v0.1.0-rc1 会发布为 Pre-release，不会顶掉 "Latest release"。
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: read
+
+jobs:
+  # 复用 CI 的两个平台构建：同一 run，产物用 download-artifact 直接取
+  build:
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # 创建 Release 需要写权限（用 CI 自带的 GITHUB_TOKEN）
+    steps:
+      - name: 取回两个平台的产物
+        uses: actions/download-artifact@v5
+        with:
+          name: webview-demo-win-x64
+          path: dist/win
+
+      - name: 取回 Linux 产物
+        uses: actions/download-artifact@v5
+        with:
+          name: webview-demo-linux-x64
+          path: dist/linux
+
+      - name: 整理成发布用的文件名
+        run: |
+          set -euo pipefail
+          exe=$(find dist/win   -type f -name '*.exe' | head -n1)
+          bin=$(find dist/linux -type f -name 'webview-demo' | head -n1)
+          if [ -z "$exe" ] || [ -z "$bin" ]; then
+            echo "没找到构建产物：exe='$exe' bin='$bin'"; find dist -type f; exit 1
+          fi
+          mkdir -p release
+          cp "$exe" "release/webview-demo-${GITHUB_REF_NAME}-windows-x64.exe"
+          cp "$bin" "release/webview-demo-${GITHUB_REF_NAME}-linux-x64"
+          chmod +x "release/webview-demo-${GITHUB_REF_NAME}-linux-x64"
+          ls -lh release
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          extra=()
+          case "$GITHUB_REF_NAME" in *-*) extra+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "${extra[@]}" \
+            release/*
