@@ -1,0 +1,49 @@
+name: windows-build
+
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: VS2022 x64 Release
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          cmake --version
+          git --version
+
+      - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib / WebView2 SDK）
+        run: cmake --preset x64
+
+      - name: 编译 Release
+        run: cmake --build --preset release
+
+      - name: 检查产物
+        run: |
+          if (-not (Test-Path build/Release/webview-demo.exe)) { throw "产物缺失" }
+          Get-Item build/Release/webview-demo.exe | Format-List Name, Length
+        shell: pwsh
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-demo-win-x64
+          path: build/Release/webview-demo.exe
+          if-no-files-found: error
+
+# 说明：
+# 这里只做「配置 + 编译」，不在 CI 里启动 GUI。
+# 因为在没有交互式桌面会话的环境里 webview 可能创建窗口失败，
+# 而失败时会弹出模态提示框，会把任务挂住。
+# 想跑运行时冒烟测试，请在有桌面的机器上执行 build/Release/webview-demo.exe --port 8080。

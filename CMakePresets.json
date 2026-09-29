@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "x64",
+      "displayName": "VS2022 x64  —  默认（GUI，无控制台窗口）",
+      "description": "生成 build/ ，Release 产物为 build/Release/webview-demo.exe",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "WEBVIEW_DEMO_CONSOLE": "OFF"
+      }
+    },
+    {
+      "name": "x64-console",
+      "displayName": "VS2022 x64  —  控制台版（调试用，能直接看日志）",
+      "description": "生成 build-console/ ，运行时会附带一个控制台窗口",
+      "inherits": "x64",
+      "binaryDir": "${sourceDir}/build-console",
+      "cacheVariables": {
+        "WEBVIEW_DEMO_CONSOLE": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "displayName": "Release",
+      "configurePreset": "x64",
+      "configuration": "Release"
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "configurePreset": "x64",
+      "configuration": "Debug"
+    },
+    {
+      "name": "console-release",
+      "displayName": "Release（控制台版）",
+      "configurePreset": "x64-console",
+      "configuration": "Release"
+    }
+  ]
+}
