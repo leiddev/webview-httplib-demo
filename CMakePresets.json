@@ -4,9 +4,8 @@
   "configurePresets": [
     {
       "name": "x64",
-      "displayName": "VS2022 x64  —  默认（GUI，无控制台窗口）",
-      "description": "生成 build/ ，Release 产物为 build/Release/webview-demo.exe",
-      "generator": "Visual Studio 17 2022",
+      "displayName": "Windows x64  —  默认（GUI，无控制台窗口）",
+      "description": "生成 build/ ，Release 产物为 build/Release/webview-demo.exe。不指定 generator，跟随本机默认（最新）的 Visual Studio，所以 VS2022 / VS2026 都能直接用。",
       "architecture": { "value": "x64", "strategy": "set" },
       "binaryDir": "${sourceDir}/build",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
@@ -16,7 +15,7 @@
     },
     {
       "name": "x64-console",
-      "displayName": "VS2022 x64  —  控制台版（调试用，能直接看日志）",
+      "displayName": "Windows x64  —  控制台版（调试用，能直接看日志）",
       "description": "生成 build-console/ ，运行时会附带一个控制台窗口",
       "inherits": "x64",
       "binaryDir": "${sourceDir}/build-console",

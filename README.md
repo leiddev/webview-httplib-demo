@@ -53,9 +53,11 @@ webview-httplib-demo/
 
 ## 构建与运行
 
-### Windows（VS2022）
+### Windows（Visual Studio 2022 或更新）
 
-需要：VS2022（含"使用 C++ 的桌面开发"）、CMake ≥ 3.20、Git、能访问 github.com（首次配置还要访问 nuget.org）。
+需要：Visual Studio 2022 或更新（含"使用 C++ 的桌面开发"工作负载）、CMake ≥ 3.20、Git、
+能访问 github.com（首次配置还要访问 nuget.org）。
+预设**不指定 Visual Studio 版本**，会跟随本机默认（最新）的 VS，所以 VS2022 / VS2026 都能直接用（见坑 10）。
 运行环境需要 **WebView2 运行时**（Win10/11 一般已随 Edge 预装）。
 
 ```powershell
@@ -163,7 +165,7 @@ node --check www/app.js                                   # 前端语法检查
 | `.gitattributes` | 仓库内统一 LF 存储，Windows 脚本保留 CRLF，二进制文件标记 |
 | `.gitignore` | `build*/`、`.vs/`、MSVC 中间产物、WebView2 运行时数据目录 |
 | `CMakePresets.json` | 四个 Windows 预设 + `linux` / `linux-debug`；用 `condition` 按平台过滤，`cmake --list-presets` 不会列出不适用的 |
-| `.github/workflows/build.yml` | push / PR 时 `windows-latest` 配置 + 编译 + 上传 exe；`ubuntu-22.04` 配置 + 编译 + **Xvfb 无头冒烟测试** + 上传 ELF |
+| `.github/workflows/build.yml` | push / PR 时 `windows-latest`（当前镜像只有 VS2026）配置 + 编译 + 上传 exe；`ubuntu-22.04` 配置 + 编译 + **Xvfb 无头冒烟测试** + 上传 ELF；actions 用 v5 |
 | `THIRD_PARTY_NOTICES.md` | 三方组件与许可声明（再分发前请留意） |
 
 ## 各库在代码里的落点
@@ -286,6 +288,15 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
    `GtkWidget *`——本项目把它当不透明指针打印，名字由 `k_native_handle_name` 按平台切换。
    另外 `title` / `set_size` 的单位、窗口管理器行为在各平台也不完全一致。
 
+10. **别在预设里写死 Visual Studio 版本**（这条是 CI 跑红了才发现的）。
+    `x64` 预设原来写的 `"generator": "Visual Studio 17 2022"`，而 GitHub 的
+    `windows-latest`（现在是 Windows Server 2025）**已经只剩 VS2026**，
+    配置直接报 `Generator Visual Studio 17 2022 could not find any instance of Visual Studio.`
+    ——只装了 VS2026 的用户会撞到一模一样的错。现在改成**不指定 generator**，
+    跟随本机默认（最新）的 Visual Studio：本机只有 VS2022 时仍然落到 `Visual Studio 17 2022`，
+    行为不变；装了更新的 VS 也不会再报错。代价是一台机器上有多个 VS 时用的是最新的那个，
+    要指定就手写 `cmake -S . -B build -G "Visual Studio 17 2022" -A x64`。
+
 ## 接口一览
 
 | 方法 | 路径 | 说明 |
@@ -337,3 +348,19 @@ WebKitGTK 2.50.4（`webkit2gtk-4.1`）+ GTK 3.24.33 + libsoup3 · Xvfb
 
 > 同一份代码在 Windows 和 Linux 上的 `/api/info` 分别返回 `"os":"windows"` / `"os":"linux"`
 > 和各自真实的 PID —— 这两处正是这次移植时修掉的平台相关 bug。
+
+### GitHub Actions 实测记录
+
+第一次把代码推上去时，Linux job 一次通过、Windows job 挂在 configure。
+摸到的 runner 实情（`windows-latest` 现在长这样了）：
+
+| 镜像 | 系统 | CMake | Visual Studio |
+|---|---|---|---|
+| `windows-latest` | Windows Server 2025 (26100) | 4.4.3 | **Enterprise 2026**（没有 VS2022） |
+| `windows-2022` | Windows Server 2022 (20348) | 3.31.6 | Enterprise 2022 |
+| `ubuntu-22.04` | Ubuntu 22.04 | — | — |
+
+- **`ubuntu-22.04` job 全绿**：配置 + 编译 + `ldd` 校验 WebKitGTK + Xvfb 无头冒烟
+  （7 个接口、内嵌资源、日志里确认是窗口自己拉的页面）；
+- **Windows job 的报错**是 `Generator Visual Studio 17 2022 could not find any instance of Visual Studio.`
+  → 见坑 10，预设里不再写死 VS 版本后即通过。
