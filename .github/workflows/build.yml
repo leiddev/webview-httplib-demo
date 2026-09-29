@@ -42,7 +42,7 @@ jobs:
         shell: pwsh
 
       - name: 上传产物
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: webview-demo-win-x64
           path: build/Release/webview-demo.exe
@@ -122,7 +122,7 @@ jobs:
           pkill -x webview-demo 2>/dev/null || true
 
       - name: 上传产物
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: webview-demo-linux-x64
           path: build-linux/webview-demo
