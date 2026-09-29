@@ -9,6 +9,7 @@
       "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64", "strategy": "set" },
       "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
         "WEBVIEW_DEMO_CONSOLE": "OFF"
       }
@@ -22,6 +23,28 @@
       "cacheVariables": {
         "WEBVIEW_DEMO_CONSOLE": "ON"
       }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux  —  Ninja / Release",
+      "description": "生成 build-linux/ 。需要 cmake>=3.20、gcc>=10（或等价 clang）、pkg-config、libgtk-3-dev、libwebkit2gtk-4.1-dev",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux  —  Ninja / Debug",
+      "description": "Linux 上默认构建本来就是控制台程序（日志直接打到终端），不需要 WEBVIEW_DEMO_CONSOLE",
+      "inherits": "linux",
+      "binaryDir": "${sourceDir}/build-linux-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     }
   ],
   "buildPresets": [
@@ -29,19 +52,34 @@
       "name": "release",
       "displayName": "Release",
       "configurePreset": "x64",
-      "configuration": "Release"
+      "configuration": "Release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "debug",
       "displayName": "Debug",
       "configurePreset": "x64",
-      "configuration": "Debug"
+      "configuration": "Debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "console-release",
       "displayName": "Release（控制台版）",
       "configurePreset": "x64-console",
-      "configuration": "Release"
+      "configuration": "Release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux Release",
+      "configurePreset": "linux",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux Debug",
+      "configurePreset": "linux-debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     }
   ]
 }

@@ -30,9 +30,27 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>  // getpid()
 #endif
 
 namespace {
+
+// ------------------------------------------------------- 平台差异的小常量 ----
+#if defined(_WIN32)
+constexpr const char* k_os_name = "windows";
+constexpr const char* k_native_handle_name = "HWND";
+constexpr const char* k_webview_hint = "请确认已安装 WebView2 运行时";
+#elif defined(__APPLE__)
+constexpr const char* k_os_name = "macos";
+constexpr const char* k_native_handle_name = "NSView *";
+constexpr const char* k_webview_hint = "请确认系统提供了 WebKit（macOS 自带）";
+#else
+constexpr const char* k_os_name = "linux";
+constexpr const char* k_native_handle_name = "GtkWidget *";
+constexpr const char* k_webview_hint =
+    "请确认已安装 WebKitGTK 运行库（如 libwebkit2gtk-4.1-0），且当前有 X11/Wayland 显示";
+#endif
 
 // --------------------------------------------------------------- 全局状态 --
 const auto g_started_at = std::chrono::steady_clock::now();
@@ -98,6 +116,16 @@ long long uptime_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
                                                                  g_started_at)
         .count();
+}
+
+// 当前进程号：Windows 用 Win32 API，其它平台用 POSIX getpid()。
+// （以前非 Windows 分支直接返回 0，Linux 上 /api/info 的 pid 就恒为 0 了。）
+long current_process_id() {
+#ifdef _WIN32
+    return static_cast<long>(GetCurrentProcessId());
+#else
+    return static_cast<long>(getpid());
+#endif
 }
 
 void reply_json(httplib::Response& res, std::string body, int status = 200) {
@@ -180,16 +208,18 @@ void on_native_echo(std::string id, std::string req, void*) {
     g_webview->resolve(id, 0, result);
 }
 
-// JS: cppNativeHandle() —— 拿到原生 HWND，演示 JS 与原生窗口互操作
+// JS: cppNativeHandle() —— 拿到原生窗口句柄，演示 JS 与原生窗口互操作
+//   注意各平台拿到的类型不同：Windows 是 HWND，Linux 是 GtkWidget *，
+//   这里只是把它当个不透明指针打印出来（名字由 k_native_handle_name 决定）。
 void on_native_handle(std::string id, std::string, void*) {
     // C API 是 webview_get_window()；C++ 这边返回 result<void*>，要判一下
-    std::uintptr_t hwnd = 0;
+    std::uintptr_t handle_value = 0;
     if (const auto handle = g_webview->window(); handle.ok()) {
-        hwnd = reinterpret_cast<std::uintptr_t>(handle.value());
+        handle_value = reinterpret_cast<std::uintptr_t>(handle.value());
     }
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "\"HWND = 0x%llX（由 webview::window() 取得）\"",
-                  static_cast<unsigned long long>(hwnd));
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "\"%s = 0x%llX（由 webview::window() 取得）\"",
+                  k_native_handle_name, static_cast<unsigned long long>(handle_value));
     g_webview->resolve(id, 0, buf);
 }
 
@@ -258,14 +288,8 @@ void register_api(httplib::Server& svr) {
         // （见 webview.h:4552）；C++ 这边没有等价的公开函数，用同一个宏最稳。
         reply_json(res, "{\"cpp-httplib\":\"" CPPHTTPLIB_VERSION "\",\"webview\":\"" +
                             std::string(WEBVIEW_VERSION_NUMBER) +
-                            "\",\"cpp-embedlib\":\"main\",\"pid\":" +
-                            std::to_string(
-#ifdef _WIN32
-                                GetCurrentProcessId()
-#else
-                                0
-#endif
-                                    ) +
+                            "\",\"cpp-embedlib\":\"main\",\"os\":\"" + std::string(k_os_name) +
+                            "\",\"pid\":" + std::to_string(current_process_id()) +
                             ",\"uptime_ms\":" + std::to_string(uptime_ms()) + "}");
     });
 }
@@ -316,7 +340,7 @@ int main(int argc, char** argv) {
     log_line("HTTP 服务已启动: " + url);
 
     // ---- 3. 原生窗口：webview（C++ API）---------------------------------
-    // 对象放栈上，析构即销毁窗口 / 释放 WebView2（相当于 C API 的 webview_destroy）。
+    // 对象放栈上，析构即销毁窗口 / 释放 WebView 内核（相当于 C API 的 webview_destroy）。
     // 构造与运行都可能抛 webview::exception，所以整段包在 try 里。
     try {
         webview::webview w(/* debug = */ true, /* parent window = */ nullptr);
@@ -338,8 +362,7 @@ int main(int argc, char** argv) {
         g_webview = nullptr;
     } catch (const webview::exception& e) {
         g_webview = nullptr;
-        fatal(std::string("webview 初始化/运行失败: ") + e.what() +
-              "（请确认已安装 WebView2 运行时）");
+        fatal(std::string("webview 初始化/运行失败: ") + e.what() + "（" + k_webview_hint + "）");
     }
 
     // ---- 4. 收尾 ---------------------------------------------------------

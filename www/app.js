@@ -90,7 +90,7 @@ const API_CALLS = {
   },
 };
 
-/* ----------------------------------------------- 原生调用（webview_bind）-- */
+/* --------------------------------------------- 原生调用（webview::bind）-- */
 
 const NATIVE_CALLS = {
   echo: () => window.cppNativeEcho($('#native-input').value),
@@ -125,6 +125,7 @@ function setBadges(info) {
     ['cpp-httplib', info['cpp-httplib'], 'badge'],
     ['webview', info.webview, 'badge'],
     ['cpp-embedlib', info['cpp-embedlib'], 'badge'],
+    ['os', info.os, 'badge'],
     [`已连接 ${location.origin}`, `PID ${info.pid}`, 'badge badge--ok'],
   ];
 
@@ -169,12 +170,12 @@ async function bootstrap() {
   if (!nativeBridgeReady()) {
     addLog(
         'err', '未检测到 webview 桥接',
-        '若在普通浏览器中打开此页面，② 区域的按钮不可用（它们依赖 webview_bind 注入的函数）。');
+        '若在普通浏览器中打开此页面，② 区域的按钮不可用（它们依赖 webview::bind 注入的函数）。');
   }
 
   addLog(
       'native', '页面就绪',
-      `来源: ${location.origin}\n桥接: ${nativeBridgeReady() ? 'webview_bind 可用' : '不可用'}`);
+      `来源: ${location.origin}\n桥接: ${nativeBridgeReady() ? 'webview::bind 可用' : '不可用'}`);
 }
 
 document.addEventListener('DOMContentLoaded', bootstrap);
