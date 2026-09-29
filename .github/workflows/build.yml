@@ -29,7 +29,7 @@ jobs:
       # 预设里刻意不写死 Visual Studio 版本，跟随 runner 上默认（最新）的 VS：
       # windows-latest 现在已经只有 VS2026，写死 "Visual Studio 17 2022" 会直接报
       # 「could not find any instance of Visual Studio」。
-      - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib / WebView2 SDK）
+      - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib / nlohmann-json / WebView2 SDK）
         run: cmake --preset x64
 
       - name: 编译 Release
@@ -38,7 +38,11 @@ jobs:
       - name: 检查产物
         run: |
           if (-not (Test-Path build/Release/webview-demo.exe)) { throw "产物缺失" }
+          $len = (Get-Item build/Release/webview-demo.exe).Length
           Get-Item build/Release/webview-demo.exe | Format-List Name, Length
+          # 顺手发一条 annotation：日志本身要 token 才能读，annotation 不用，
+          # 这样 README 里的体积数字随时可以从 API 复核。
+          Write-Host "::notice title=Windows 产物大小::$len 字节"
         shell: pwsh
 
       - name: 上传产物
@@ -82,6 +86,8 @@ jobs:
           test -x build-linux/webview-demo
           ls -l build-linux/webview-demo
           file build-linux/webview-demo
+          # annotation 可以不带 token 读（日志不行），README 的体积数字靠它复核
+          echo "::notice title=Linux 产物大小::$(stat -c%s build-linux/webview-demo) 字节"
           ldd build-linux/webview-demo | grep -i webkit
 
       - name: 冒烟测试（Xvfb 无头运行 + 打接口 + 校验日志）
