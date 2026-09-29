@@ -75,20 +75,47 @@ const auto g_started_at = std::chrono::steady_clock::now();
 webview::webview* g_webview = nullptr;  // webview::bind 回调里要用它回传结果
 
 // ---------------------------------------------------------------- 小工具 ----
+#ifdef _WIN32
+// Win32 的 *W 接口要的是 UTF-16，而项目里传给它们的都是 UTF-8 字节串
+// （MSVC 那边我们加了 /utf-8，GCC 本来就是），所以必须真正转一次码。
+//
+// 千万不要写成 std::wstring(msg.begin(), msg.end())：那是把每个"字节"当成一个
+// wchar_t 塞进去，一个汉字（UTF-8 3 字节）会变成 3 个乱码字符；又因为 MSVC 的
+// char 是带符号的，字节 0xE7 还会符号扩展成 0xFFE7，屏幕上就是一串半角片假名。
+// 这个坑编译器在 /W3 下不会警告，只有把对话框里的字读出来才发现。
+//
+// flags 传 0（不传 MB_ERR_INVALID_CHARS）是有意的：非法 UTF-8 会被换成 U+FFFD
+// 而不是失败，和 json_text() 用 error_handler_t::replace 是同一个态度 ——
+// 报错信息本身绝不能因为混进一个坏字节就报不出来。
+std::wstring to_wstring_utf8(const std::string& s) {
+    if (s.empty()) {
+        return {};
+    }
+    const int len = static_cast<int>(s.size());
+    const int size = MultiByteToWideChar(CP_UTF8, 0, s.data(), len, nullptr, 0);
+    std::wstring w(static_cast<std::size_t>(size), L'\0');
+    if (size > 0) {
+        MultiByteToWideChar(CP_UTF8, 0, s.data(), len, w.data(), size);
+    }
+    return w;
+}
+#endif
+
 void log_line(const std::string& msg) {
     const std::string line = msg + "\n";
     std::fputs(line.c_str(), stdout);
     std::fflush(stdout);
 #ifdef _WIN32
-    // GUI 子系统没有控制台，日志在 VS 输出窗口 / DebugView 里可见
-    OutputDebugStringA(line.c_str());
+    // GUI 子系统没有控制台，日志在 VS 输出窗口 / DebugView 里可见。
+    // 这里同样得用 *W 版本：*A 会把 UTF-8 当成 ANSI 码页解释，中文一样是乱码。
+    OutputDebugStringW(to_wstring_utf8(line).c_str());
 #endif
 }
 
 [[noreturn]] void fatal(const std::string& msg) {
     log_line("[fatal] " + msg);
 #ifdef _WIN32
-    MessageBoxW(nullptr, std::wstring(msg.begin(), msg.end()).c_str(), L"webview-httplib-demo",
+    MessageBoxW(nullptr, to_wstring_utf8(msg).c_str(), L"webview-httplib-demo",
                 MB_ICONERROR | MB_OK);
 #endif
     std::exit(1);

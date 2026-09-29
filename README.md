@@ -342,10 +342,12 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
    `cmake --build` 一次之后就正常了。
 
 6. **（仅 Windows）无控制台窗口的 GUI 程序看不到 `printf`。**
-   项目默认 `WIN32_EXECUTABLE`（不弹黑框），日志走 `OutputDebugStringA`（VS 输出窗口 / DebugView 可见）。
+   项目默认 `WIN32_EXECUTABLE`（不弹黑框），日志走 `OutputDebugStringW`（VS 输出窗口 / DebugView 可见）。
    调试阶段用 `-DWEBVIEW_DEMO_CONSOLE=ON` 更方便。
    注意 GUI 子系统下 MSVC 默认找 `WinMain`，本项目用 `target_link_options(... "/ENTRY:mainCRTStartup")`
    保留标准 `main()` 入口。Linux 上这个开关没有意义——默认构建就能在终端里看到日志。
+   （用 `*W` 而不是 `*A` 的原因见坑 12；带控制台构建时，中文日志还取决于
+   控制台码页 `chcp 65001`，重定向到文件则不受影响。）
 
 7. **端口冲突**：默认用 `bind_to_any_port` 自动挑空闲端口，窗口打开的就是该端口，不需要硬编码。
 
@@ -383,6 +385,29 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
     后者带一份它自己的 `CMakeLists.txt`，而 `include.zip` 里只有头文件，我们包一个
     INTERFACE 目标就好，不用把第三方的构建脚本拉进来；顺手配了 `URL_HASH`，
     上游哪天换了 asset 会当场报错而不是悄悄编过。
+
+12. **开了 `/utf-8` 之后，Win32 的 `*A` 接口全是坏的，`*W` 接口则必须自己转码**
+    （这条是把错误对话框里的字读出来才发现的）。
+    项目给 MSVC 加了 `/utf-8`（见 `CMakeLists.txt`，注释里写着"保证中文字符串字面量正确"），
+    好处是源码和窄字符串统一 UTF-8、和 GCC 行为一致；代价是**任何把窄字符串递给 Win32 的地方
+    都得先转成 UTF-16**：
+
+    - `MessageBoxA` / `OutputDebugStringA` 会把 UTF-8 当成 ANSI 码页（本机 936）解释，
+      中文照样糊——`*A` 并不能当退路。
+    - 更隐蔽的是这种写法：`MessageBoxW(nullptr, std::wstring(msg.begin(), msg.end()).c_str(), ...)`。
+      它是**按字节**往 `wchar_t` 里塞，一个汉字（UTF-8 3 字节）变成 3 个乱码字符；
+      又因为 MSVC 的 `char` 是带符号的，字节 `0xE7` 会符号扩展成 `0xFFE7`，
+      于是"端口 18087 已被占用"在对话框里显示成
+      `￧ﾫﾯ￩ﾏﾣ 18087 ￩ﾷﾲ￨ﾢﾫ￩ﾍﾠ￧ﾔﾨ`——数字还在，中文全没了。
+      `/W3` 下**编译器不会给任何警告**，GUI 子系统又没有控制台，所以只有把对话框里的字读出来
+      才能发现（`FindWindow("#32770", ...)` + `GetWindowTextW` 就可以了）。
+
+    修法是 `to_wstring_utf8()`（`MultiByteToWideChar(CP_UTF8, ...)`，见 `src/main.cpp`），
+    并且 `flags` 传 0 而不是 `MB_ERR_INVALID_CHARS`：非法字节变成 U+FFFD 而不是直接失败，
+    和 `json_text()` 用 `error_handler_t::replace` 是同一个态度——**报错信息本身不能因为
+    混进一个坏字节就报不出来**。这条路径平时没人跑，但它正好是第一次用的人最容易撞上的那条
+    （WebView2 运行时没装 → `fatal("webview 初始化/运行失败: ... 请确认已安装 WebView2 运行时")`），
+    糊在那个对话框里等于什么都没说。
 
 ## 接口一览
 
@@ -484,7 +509,7 @@ WebKitGTK 2.50.4（`webkit2gtk-4.1`）+ GTK 3.24.33 + libsoup3 · Xvfb
 
 ### Windows 实测记录
 
-`build\Release\webview-demo.exe`，编译 0 警告，**561,664 字节**（CI 的 `windows-latest` 是 VS2026，
+`build\Release\webview-demo.exe`，编译 0 警告，**562,176 字节**（CI 的 `windows-latest` 是 VS2026，
 编出来 568,832 字节）：
 
 - 窗口类名 `webview`、客户区 1080×780、标题与 `set_title()` 一致 → 构造 / `set_size` / `set_title` 生效；
@@ -493,7 +518,12 @@ WebKitGTK 2.50.4（`webkit2gtk-4.1`）+ GTK 3.24.33 + libsoup3 · Xvfb
   九个用例（六个接口 + 小数 + 缺参数 400 + 坏 UTF-8）的返回**全部能被 JSON 解析器吃掉**；
 - 注入脚本串起三个绑定：`cppNativeEcho` 返回 `{"source":"webview::bind → C++",…}`、
   `cppNativeHandle` 返回 `HWND = 0x…`、`cppCloseWindow` 之后进程自行退出（ExitCode=0）→
-  `bind` / `resolve` / `window` / `terminate` 与 RAII 析构都正常。
+  `bind` / `resolve` / `window` / `terminate` 与 RAII 析构都正常；
+- **错误对话框里的字是读出来核对过的**（这条只能这么做，见坑 12）：先占住端口再启动，
+  然后用 `FindWindow("#32770", "webview-httplib-demo")` + `GetWindowTextW` 把对话框正文取回来，
+  逐字符打印码点——修之前是 `￧ﾫﾯ￩ﾏﾣ 18087 ￩ﾷﾲ￨ﾢﾫ￩ﾍﾠ￧ﾔﾨ`
+  （`U+FFE7 U+FFAB U+FFAF …`，UTF-8 字节被符号扩展的结果），
+  修之后是 `端口 18087 已被占用`（`U+7AEF U+53E3 …`）。
 
 ### Linux 实测记录
 
