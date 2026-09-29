@@ -132,14 +132,14 @@ target_link_libraries(webview-demo PRIVATE
     WebAssets             # 内嵌资源（同时把 C++20 要求传播过来）
     cpp-embedlib-httplib  # 提供 httplib::mount(svr, Web::FS)
     httplib::httplib      # HTTP 服务器
-    webview::core)        # webview C API（header-only）
+    webview::core)        # webview（header-only；C API 与 C++ API 同一个头文件）
 ```
 
 ```cpp
 #include "WebAssets.h"             // 由 cpp-embedlib 生成
 #include <cpp-embedlib-httplib.h>  // httplib::mount
 #include <httplib.h>
-#include <webview/webview.h>       // webview C API
+#include <webview/webview.h>       // webview（本项目只用其中的 C API）
 
 httplib::mount(svr, Web::FS);                        // 内嵌资源挂到 "/"
 int port = svr.bind_to_any_port("127.0.0.1");        // 随机空闲端口
@@ -155,11 +155,27 @@ svr.stop(); t.join();
 
 ## 需要注意的几个坑（都实测踩过）
 
-1. **webview ≥ 0.11 已经没有 C++ API 了。**
-   网上（含 yhirose 那篇 ch06 文章）流传的 `webview::webview w(false, nullptr); w.bind(...)`
-   是 0.10 时代的写法；0.11/0.12 的 `core/include/webview/webview.h` 只有 **C API**，
-   C++ 外观类已被移除，照抄会编译不过。本项目用的是 0.12.0 的 C API，
-   CMake 目标也从旧的 `webview::core`（老版本）对应到现在的 header-only 目标 `webview::core`。
+1. **webview 0.12 里 C API 和 C++ API 是并存的，别信“C++ API 已被移除”的说法。**
+   这条我最初搞错了，纠正如下：`core/include/webview/webview.h` 里**搜不到 `class webview`**，
+   但那不代表没有 C++ API——公开类型 `webview::webview` 是个 **type alias**：
+
+   ```cpp
+   // webview.h:4367 / 4374
+   using browser_engine = detail::win32_edge_engine;   // 各平台各挑一个（GTK / Cocoa / Edge）
+   namespace webview { using webview = browser_engine; }
+   ```
+
+   真正的实现在 `webview::detail::engine_base`（webview.h:1221，暴露
+   `set_title` / `set_size` / `navigate` / `set_html` / `init` / `eval` / `bind` / `run` …）
+   和三个平台子类 `gtk_webkit_engine` / `cocoa_wkwebview_engine` / `win32_edge_engine`。
+   官方 README 的第一个示例就是 **C++ Example**（`webview::webview w(false, nullptr);`），
+   `examples/basic.cc` 同理，实测能编过。
+
+   更关键的是**依赖方向**：C API 是包在这套 C++ 类外面的薄壳——
+   `webview_create()` 就是 `new webview::webview{...}`，其余 C 函数清一色转发到成员函数（webview.h:4389 起）。
+
+   两种写法都能用、都编得过。
+   顺带一个教训：**判断某个 API 是否还在，不能只搜 `class X`**——别名（`using`）和宏同样可能是入口。
 
 2. **webview 的 C API 必须在 UI 线程调用。**
    `webview_eval` / `webview_terminate` 之类不会自动切线程——在子线程里调用会“返回成功但毫无效果”
