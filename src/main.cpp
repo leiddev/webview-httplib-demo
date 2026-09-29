@@ -315,7 +315,7 @@ int main(int argc, char** argv) {
         webview::webview w(/* debug = */ true, /* parent window = */ nullptr);
         g_webview = &w;  // 回调里要通过它 resolve / terminate
 
-        w.set_title("cpp-httplib + webview + cpp-embedlib Demo");
+        w.set_title("cpp-httplib + webview + cpp-embedlib + nlohmann/json Demo");
         w.set_size(1080, 780, WEBVIEW_HINT_NONE);
 
         // JS → C++ 的三个绑定（回调统一是 binding_t 签名）

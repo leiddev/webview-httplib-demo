@@ -149,6 +149,13 @@ jobs:
               "http://127.0.0.1:18080$u"
           done
 
+          # 内嵌资源必须是"这一版"的：改过 www/ 却因为 mtime 没变而跳过嵌入，
+          # 是 cpp-embedlib 最阴的一个坑（编出来还是旧页面，还不报错）。
+          # 用一个只有新页面才有的字符串守一下。
+          curl -sf "http://127.0.0.1:18080/" | grep -q 'nlohmann/json' \
+            || { echo "::error title=首页内容::内嵌的 index.html 不是最新的（缺 nlohmann/json）"; exit 1; }
+          printf '  %-26s %s\n' "首页含 nlohmann/json" "✓"
+
           echo "--- 程序日志 ---"
           cat /tmp/run.log
 
