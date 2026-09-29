@@ -33,6 +33,34 @@ webview 用的是 **0.12.0 的 C++ API**（`webview::webview w(true, nullptr)` �
 └──────────────────────────────────────────────┘
 ```
 
+## 下载预编译版本（不想自己编译）
+
+到 [**Releases**](https://github.com/leiddev/webview-httplib-demo/releases) 下最新的那个：
+
+| 文件 | 平台 | 运行前提 |
+| --- | --- | --- |
+| `webview-demo-vX.Y.Z-windows-x64.exe` | Windows 10/11 x64 | 双击即可。需要 **WebView2 运行时**（Win11 和较新的 Win10 一般自带） |
+| `webview-demo-vX.Y.Z-linux-x64` | Linux x64 | `chmod +x` 后运行。需要 **WebKitGTK 4.1**（`libwebkit2gtk-4.1-0`）和一个可用的显示环境 |
+
+二进制不是手工传上去的，而是**推 `v*` tag 时由 CI 现编现发**：
+
+```
+git tag -a v0.1.1 -m "..."   &&   git push origin v0.1.1
+        │
+        └─ .github/workflows/release.yml
+             ├─ build   复用 build.yml：Windows(VS2026) + Ubuntu 22.04 各编一遍（同一 run）
+             └─ publish download-artifact 取回产物 → gh release create（用 CI 自带的 GITHUB_TOKEN，不需要 PAT）
+```
+
+发布说明的取用顺序（publish 里做了 checkout，读的就是这个 tag 的内容）：
+
+1. `release-notes/<tag>.md`，例如 `release-notes/v0.1.1.md` —— 想手写就放这个；
+2. 根目录 `RELEASE_NOTES.md`；
+3. 都没有才回退到 `gh release create --generate-notes`。注意它列的是**合并的 PR**，
+   而本仓库的提交都是直接 push，所以那时候正文只会有一行 changelog 链接。
+
+tag 名里带连字符的（如 `v0.1.1-rc1`）会自动标成 **Pre-release**，不会顶掉 Latest release。
+
 ## 目录结构
 
 ```
@@ -167,7 +195,9 @@ node --check www/app.js                                   # 前端语法检查
 | `.gitattributes` | 仓库内统一 LF 存储，Windows 脚本保留 CRLF，二进制文件标记 |
 | `.gitignore` | `build*/`、`.vs/`、MSVC 中间产物、WebView2 运行时数据目录 |
 | `CMakePresets.json` | 四个 Windows 预设 + `linux` / `linux-debug`；用 `condition` 按平台过滤，`cmake --list-presets` 不会列出不适用的 |
-| `.github/workflows/build.yml` | push / PR 时 `windows-latest`（当前镜像只有 VS2026）配置 + 编译 + 上传 exe；`ubuntu-22.04` 配置 + 编译 + **Xvfb 无头冒烟测试** + 上传 ELF；actions 用 v5 |
+| `.github/workflows/build.yml` | push / PR 时 `windows-latest`（当前镜像只有 VS2026）配置 + 编译 + 上传 exe；`ubuntu-22.04` 配置 + 编译 + **Xvfb 无头冒烟测试** + 上传 ELF；也供 release.yml 复用（`workflow_call`） |
+| `.github/workflows/release.yml` | 推 `v*` tag 时复用 build.yml 编两个平台，再用 CI 自带的 `GITHUB_TOKEN` 建 Release 并把两个二进制挂上去 |
+| `release-notes/vX.Y.Z.md` | 该版本的发布说明，publish job 会优先读它当 Release 正文 |
 | `THIRD_PARTY_NOTICES.md` | 三方组件与许可声明（再分发前请留意） |
 
 ## 各库在代码里的落点
