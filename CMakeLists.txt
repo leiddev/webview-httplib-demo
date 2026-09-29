@@ -2,13 +2,15 @@
 #  webview-httplib-demo
 #
 #  一个最小的桌面应用示例（Windows / Linux；macOS 理论可行但未验证），
-#  演示三个库如何配合：
+#  演示四个库如何配合：
 #    1. cpp-httplib   https://github.com/yhirose/cpp-httplib
 #                     本地 HTTP 服务器（提供 /api/* 接口）
 #    2. webview       https://github.com/webview/webview
 #                     原生窗口 + 系统 WebView 内核（Win: WebView2 / Linux: WebKitGTK）
 #    3. cpp-embedlib  https://github.com/yhirose/cpp-embedlib
 #                     把 www/ 目录里的前端资源编译进可执行文件（单文件分发）
+#    4. nlohmann/json https://github.com/nlohmann/json
+#                     JSON 的序列化 / 解析（不必再手写转义与拼接）
 # ---------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.20)
 
@@ -40,6 +42,13 @@ option(WEBVIEW_DEMO_CONSOLE "以控制台程序方式构建（可看到日志输
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
+# URL 方式下载的压缩包，让解压后的时间戳取"解压那一刻"而不是压缩包里记录的历史时间，
+# 否则 Ninja/Make 容易被一堆陈旧的 mtime 搞出多余的重建。这个 policy 是 CMake 3.24 才有的，
+# 而本项目最低支持 3.20，所以要先判一下是否存在。
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+
 # cpp-httplib —— 单头文件 HTTP 服务器/客户端
 FetchContent_Declare(cpp-httplib
     GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
@@ -61,6 +70,18 @@ FetchContent_Declare(cpp-embedlib
     GIT_TAG        main
     GIT_SHALLOW    TRUE)
 
+# nlohmann/json —— JSON 序列化 / 解析（header-only）
+#   这里下的不是官方文档推荐的 json.tar.xz，而是 include.zip：
+#     * json.tar.xz 里带一份它自己的 CMakeLists.txt，FetchContent_MakeAvailable 会把
+#       它的构建脚本（连同它的 CMake 版本要求）一起拉进来；
+#     * include.zip 里只有头文件、没有 CMakeLists.txt，MakeAvailable 解压完就结束，
+#       然后我们自己建一个 INTERFACE 目标指过去，干净很多；体积也小（约 300 KB）。
+#   URL_HASH 是为了让"下的到底是哪一份"可复现 —— 上游替换了 asset 会直接报错，
+#   而不是悄悄编过。
+FetchContent_Declare(nlohmann_json
+    URL      https://github.com/nlohmann/json/releases/download/v3.12.0/include.zip
+    URL_HASH SHA256=B8CB0EF2DD7F57F18933997C9934BB1FA962594F701CD5A8D3C2C80541559372)
+
 # 让 httplib 保持零外部依赖（不找 OpenSSL / zlib / brotli）
 set(HTTPLIB_REQUIRE_OPENSSL          OFF CACHE BOOL "" FORCE)
 set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
@@ -74,7 +95,15 @@ set(WEBVIEW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(WEBVIEW_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
 set(WEBVIEW_BUILD_STATIC_LIBRARY OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(cpp-httplib webview cpp-embedlib)
+FetchContent_MakeAvailable(cpp-httplib webview cpp-embedlib nlohmann_json)
+
+# include.zip 解压出来只有 include/ 与 single_include/（没有 CMakeLists.txt），
+# 所以这里自己包一个 INTERFACE 目标。用 single_include 那份合并好的单头文件。
+# 目标名沿用上游惯例，链接时写 nlohmann_json::nlohmann_json 即可。
+add_library(nlohmann_json INTERFACE)
+add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+target_include_directories(nlohmann_json INTERFACE
+    "${nlohmann_json_SOURCE_DIR}/single_include")
 
 # ---------------------------------------------------------------------------
 #  把 www/ 里的前端资源嵌入成静态库，暴露 Web::FS（生成头文件 WebAssets.h）
@@ -89,10 +118,11 @@ cpp_embedlib_add(WebAssets
 add_executable(webview-demo src/main.cpp)
 
 target_link_libraries(webview-demo PRIVATE
-    WebAssets             # Web::FS —— 内嵌的前端资源
-    cpp-embedlib-httplib  # httplib::mount(svr, Web::FS)
-    httplib::httplib      # HTTP 服务器
-    webview::core)        # webview（header-only 目标，C/C++ 两套 API 同一个头文件）
+    WebAssets                       # Web::FS —— 内嵌的前端资源
+    cpp-embedlib-httplib            # httplib::mount(svr, Web::FS)
+    httplib::httplib                # HTTP 服务器
+    nlohmann_json::nlohmann_json    # JSON 序列化 / 解析
+    webview::core)                  # webview（header-only 目标，C/C++ 两套 API 同一个头文件）
 
 # main.cpp 用 std::thread 跑 httplib 的监听线程。Windows 上不需要额外链接，
 # 但 Linux 上要 -pthread（依赖里可能已经带上，这里显式声明更稳妥）。

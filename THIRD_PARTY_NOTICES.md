@@ -10,6 +10,7 @@
 | cpp-httplib | v0.38.0 | MIT | 本地 HTTP 服务器 / 客户端 | https://github.com/yhirose/cpp-httplib |
 | webview | 0.12.0 | MIT | 跨平台 WebView 封装（C API） | https://github.com/webview/webview |
 | cpp-embedlib | main | MIT | 把前端资源编译进可执行文件 | https://github.com/yhirose/cpp-embedlib |
+| nlohmann/json | v3.12.0 | MIT | JSON 的序列化 / 解析 | https://github.com/nlohmann/json |
 | Microsoft.Web.WebView2 SDK | 1.0.1150.38 | Microsoft 软件许可条款 | 提供 `WebView2.h` 等头文件（仅 Windows 配置期从 nuget.org 下载） | https://www.nuget.org/packages/Microsoft.Web.WebView2 |
 
 ## 运行时依赖（不在本仓库内，也不需要随包分发）

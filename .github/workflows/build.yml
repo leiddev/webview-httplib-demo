@@ -71,7 +71,7 @@ jobs:
           g++ --version
           pkg-config --modversion webkit2gtk-4.1 gtk+-3.0
 
-      - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib）
+      - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib / nlohmann-json）
         run: cmake --preset linux
 
       - name: 编译 Release
@@ -102,10 +102,41 @@ jobs:
             sleep 1
           done
 
-          echo "--- /api/info ---"
-          curl -sf "http://127.0.0.1:18080/api/info"; echo
-          echo "--- POST /api/add ---"
-          curl -sf -X POST -d 'a=12&b=30' "http://127.0.0.1:18080/api/add"; echo
+          # 每个接口的返回都要：① 能被真正的 JSON 解析器吃掉 ② 关键字段对得上。
+          # 这正是引入 JSON 库之后应该守住的东西 —— 手写拼接最怕的就是悄悄产出非法 JSON。
+          assert_json() {  # $1=标签 $2=必须出现的片段；JSON 正文从 stdin 读
+            local body; body=$(cat)
+            printf '  %-26s %s\n' "$1" "$body"
+            if ! printf '%s' "$body" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+              echo "::error title=$1::返回的不是合法 JSON: $body"; exit 1
+            fi
+            case "$body" in
+              *"$2"*) ;;
+              *) echo "::error title=$1::缺少 $2，实际: $body"; exit 1 ;;
+            esac
+          }
+
+          echo "--- 接口 JSON 校验 ---"
+          curl -sf "http://127.0.0.1:18080/api/info" \
+            | assert_json "GET /api/info" '"nlohmann/json":"'
+          curl -sf "http://127.0.0.1:18080/api/hello" \
+            | assert_json "GET /api/hello" '"from":"GET /api/hello"'
+          curl -sf "http://127.0.0.1:18080/api/echo?q=%E4%BD%A0" \
+            | assert_json "GET /api/echo" '"you_said":"你"'
+          curl -sf -X POST -d 'a=12&b=30' "http://127.0.0.1:18080/api/add" \
+            | assert_json "POST /api/add" '"sum":42.0'
+          curl -sf "http://127.0.0.1:18080/api/assets" \
+            | assert_json "GET /api/assets" '"app.js"'
+          # 非法 UTF-8 不能把服务打挂，也不能吐出非法 JSON（error_handler_t::replace）
+          curl -sf "http://127.0.0.1:18080/api/echo?q=%FF%FE" \
+            | assert_json "GET /api/echo (坏 UTF-8)" '"length":2'
+          # 缺参数时必须是 400（-f 会让 4xx 失败，这里单独测状态码）
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'a=1' "http://127.0.0.1:18080/api/add")
+          if [ "$code" != "400" ]; then
+            echo "::error title=/api/add::缺参数应返回 400，实际 $code"; exit 1
+          fi
+          printf '  %-26s %s\n' "POST /api/add (缺参数)" "HTTP $code ✓"
+
           echo "--- 静态资源（cpp-embedlib + mount）---"
           for u in / /style.css /app.js; do
             curl -sf -o /dev/null -w "  GET $u -> %{http_code} (%{size_download}B)\n" \

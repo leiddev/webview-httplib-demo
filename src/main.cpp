@@ -1,5 +1,6 @@
 // ---------------------------------------------------------------------------
 //  main.cpp —— cpp-httplib + webview + cpp-embedlib 桌面应用示例
+//  （JSON 的序列化 / 解析交给 nlohmann/json，不再手写转义与拼接）
 //
 //  运行结构：
 //
@@ -16,6 +17,8 @@
 #include <httplib.h>               // cpp-httplib
 
 #include <webview/webview.h>  // webview 0.12 的 C++ API（header-only）
+
+#include <nlohmann/json.hpp>  // JSON 序列化 / 解析（header-only）
 
 #include <cctype>
 #include <chrono>
@@ -35,6 +38,21 @@
 #endif
 
 namespace {
+
+// ------------------------------------------------------------------ JSON ----
+// 用 ordered_json 而不是 nlohmann::json：后者的底层是 std::map，键会按字母序输出，
+// ordered_json 保留我们插入的顺序（响应体读起来和以前一模一样）。
+using json = nlohmann::ordered_json;
+
+// 统一的序列化出口。注意 resolve() / set_content() 要的是"JSON 文本"，
+// 所以最后永远得 dump() 一次 —— JSON 库帮的是"造"，不是"交"。
+//
+// error_handler_t::replace：源字符串里若混进非法 UTF-8（比如 ?q=%FF，一个 URL 就能塞进来），
+// 默认的 strict 会抛 type_error.316 被 cpp-httplib 兜成 500；
+// replace 则把坏字节换成 U+FFFD，照样输出合法 JSON。
+std::string json_text(const json& value) {
+    return value.dump(-1, ' ', false, json::error_handler_t::replace);
+}
 
 // ------------------------------------------------------- 平台差异的小常量 ----
 #if defined(_WIN32)
@@ -76,29 +94,6 @@ void log_line(const std::string& msg) {
     std::exit(1);
 }
 
-std::string json_escape(std::string_view s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (unsigned char c : s) {
-        switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-            if (c < 0x20) {
-                char buf[8];
-                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-                out += buf;
-            } else {
-                out += static_cast<char>(c);
-            }
-        }
-    }
-    return out;
-}
-
 std::string local_time_string() {
     const std::time_t t = std::time(nullptr);
     std::tm tm{};
@@ -128,34 +123,19 @@ long current_process_id() {
 #endif
 }
 
-void reply_json(httplib::Response& res, std::string body, int status = 200) {
+void reply_json(httplib::Response& res, const json& body, int status = 200) {
     res.status = status;
-    res.set_content(std::move(body), "application/json; charset=utf-8");
+    res.set_content(json_text(body), "application/json; charset=utf-8");
 }
 
 // 取 webview::bind 收到的 JSON 数组参数里的第一个字符串
-// （示例够用：req 形如 ["hello"]）
-std::string first_json_string(std::string_view json) {
-    const auto pos = json.find('"');
-    if (pos == std::string_view::npos) { return {}; }
-    std::string out;
-    for (std::size_t i = pos + 1; i < json.size(); ++i) {
-        const char c = json[i];
-        if (c == '\\' && i + 1 < json.size()) {
-            const char n = json[++i];
-            switch (n) {
-            case 'n': out += '\n'; break;
-            case 't': out += '\t'; break;
-            case 'r': out += '\r'; break;
-            default: out += n; break;
-            }
-        } else if (c == '"') {
-            break;
-        } else {
-            out += c;
-        }
+// （req 形如 ["hello"]，是 "params" 那一段的原文）
+std::string first_json_string(const std::string& args) {
+    const json parsed = json::parse(args, nullptr, /* allow_exceptions = */ false);
+    if (parsed.is_array() && !parsed.empty() && parsed.front().is_string()) {
+        return parsed.front().get<std::string>();
     }
-    return out;
+    return {};
 }
 
 double form_number(const httplib::Request& req, const std::string& key, bool& ok) {
@@ -175,37 +155,26 @@ double form_number(const httplib::Request& req, const std::string& key, bool& ok
     }
 }
 
-std::string format_number(double v) {
-    char buf[64];
-    if (v == static_cast<double>(static_cast<long long>(v))) {
-        std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.6g", v);
-    }
-    return buf;
-}
-
 // -------------------------------------------------- webview::bind 回调（C++）--
 // 这些函数由 JavaScript 直接调用，完全不走 HTTP。
 // 回调签名就是 webview::engine_base::binding_t：
 //     std::function<void(std::string id, std::string args, void *arg)>
 // 处理完用 resolve(id, status, result) 把结果回传给 JS 的 Promise
-// （对应 C API 的 webview_return；result 需是合法 JSON，普通字符串要带引号）。
+// （对应 C API 的 webview_return；result 需是合法 JSON 文本，
+//   所以这里统一走 json_text()，别直接传裸字符串）。
 
 // JS: cppNativeEcho("...") —— 把文本交给 C++ 处理后再返回
 void on_native_echo(std::string id, std::string req, void*) {
     const std::string text = first_json_string(req);
-    const std::string result = "{\"source\":\"webview::bind → C++\",\"echo\":\"" +
-                               json_escape(text) + "\",\"chars\":" + std::to_string(text.size()) +
-                               ",\"upper\":\"" + json_escape([&] {
-        std::string u = text;
-        for (char& c : u) {
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        }
-        return u;
-    }()) + "\",\"time\":\"" + local_time_string() +
-                               "\"}";
-    g_webview->resolve(id, 0, result);
+    std::string upper = text;
+    for (char& c : upper) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    g_webview->resolve(id, 0, json_text(json{{"source", "webview::bind → C++"},
+                                             {"echo", text},
+                                             {"chars", text.size()},
+                                             {"upper", upper},
+                                             {"time", local_time_string()}}));
 }
 
 // JS: cppNativeHandle() —— 拿到原生窗口句柄，演示 JS 与原生窗口互操作
@@ -218,14 +187,14 @@ void on_native_handle(std::string id, std::string, void*) {
         handle_value = reinterpret_cast<std::uintptr_t>(handle.value());
     }
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "\"%s = 0x%llX（由 webview::window() 取得）\"",
+    std::snprintf(buf, sizeof(buf), "%s = 0x%llX（由 webview::window() 取得）",
                   k_native_handle_name, static_cast<unsigned long long>(handle_value));
-    g_webview->resolve(id, 0, buf);
+    g_webview->resolve(id, 0, json_text(json(std::string(buf))));
 }
 
 // JS: cppCloseWindow() —— 关闭窗口（结束 webview::run() 的消息循环）
 void on_close_window(std::string id, std::string, void*) {
-    g_webview->resolve(id, 0, "\"closing...\"");
+    g_webview->resolve(id, 0, json_text(json("closing...")));
     g_webview->terminate();  // C API: webview_terminate()
 }
 
@@ -233,23 +202,20 @@ void on_close_window(std::string id, std::string, void*) {
 void register_api(httplib::Server& svr) {
     // ---- GET /api/hello ---------------------------------------------------
     svr.Get("/api/hello", [](const httplib::Request&, httplib::Response& res) {
-        reply_json(res, "{\"message\":\"你好，这是 C++ 后端（cpp-httplib）的问候\","
-                        "\"from\":\"GET /api/hello\","
-                        "\"time\":\"" +
-                            local_time_string() + "\"}");
+        reply_json(res, json{{"message", "你好，这是 C++ 后端（cpp-httplib）的问候"},
+                             {"from", "GET /api/hello"},
+                             {"time", local_time_string()}});
     });
 
     // ---- GET /api/time ----------------------------------------------------
     svr.Get("/api/time", [](const httplib::Request&, httplib::Response& res) {
-        reply_json(res, "{\"local\":\"" + local_time_string() +
-                            "\",\"uptime_ms\":" + std::to_string(uptime_ms()) + "}");
+        reply_json(res, json{{"local", local_time_string()}, {"uptime_ms", uptime_ms()}});
     });
 
     // ---- GET /api/echo?q=... ---------------------------------------------
     svr.Get("/api/echo", [](const httplib::Request& req, httplib::Response& res) {
         const std::string q = req.get_param_value("q");
-        reply_json(res, "{\"you_said\":\"" + json_escape(q) +
-                            "\",\"length\":" + std::to_string(q.size()) + "}");
+        reply_json(res, json{{"you_said", q}, {"length", q.size()}});
     });
 
     // ---- POST /api/add （application/x-www-form-urlencoded: a=..&b=..）----
@@ -258,39 +224,42 @@ void register_api(httplib::Server& svr) {
         const double a = form_number(req, "a", ok_a);
         const double b = form_number(req, "b", ok_b);
         if (!ok_a || !ok_b) {
-            reply_json(res, "{\"error\":\"需要表单参数 a 与 b，例如 a=12&b=30\"}", 400);
+            reply_json(res, json{{"error", "需要表单参数 a 与 b，例如 a=12&b=30"}}, 400);
             return;
         }
-        reply_json(res, "{\"a\":" + format_number(a) + ",\"b\":" + format_number(b) +
-                            ",\"sum\":" + format_number(a + b) + "}");
+        // 注意 a / b / sum 都是 double，所以输出是 12.0 而不是 12 ——
+        // 想输出整数得自己判一下再塞 long long（这里故意不判，保持代码简单）。
+        reply_json(res, json{{"a", a}, {"b", b}, {"sum", a + b}});
     });
 
     // ---- GET /api/assets —— 列出被 cpp-embedlib 内嵌的资源 ----------------
     svr.Get("/api/assets", [](const httplib::Request&, httplib::Response& res) {
-        std::string items;
-        int files = 0;
+        json files = json::array();
         for (auto it = Web::FS.begin(); it != Web::FS.end(); ++it) {
             const auto entry = *it;
             if (entry.is_dir()) { continue; }
-            ++files;
             const auto bytes = entry.bytes();
-            if (!items.empty()) { items += ','; }
-            items += "{\"path\":\"" + json_escape(entry.path()) + "\",\"mime\":\"" +
-                     json_escape(entry.mime_type()) +
-                     "\",\"bytes\":" + std::to_string(bytes ? bytes->size() : 0) + "}";
+            files.push_back(json{{"path", entry.path()},
+                                 {"mime", entry.mime_type()},
+                                 {"bytes", bytes ? bytes->size() : 0}});
         }
-        reply_json(res, "{\"count\":" + std::to_string(files) + ",\"files\":[" + items + "]}");
+        reply_json(res, json{{"count", files.size()}, {"files", files}});
     });
 
-    // ---- GET /api/info —— 三个库的版本信息 -------------------------------
+    // ---- GET /api/info —— 各库的版本信息 ---------------------------------
     svr.Get("/api/info", [](const httplib::Request&, httplib::Response& res) {
         // C 的 webview_version() 只是返回 webview::detail::library_version_info
         // （见 webview.h:4552）；C++ 这边没有等价的公开函数，用同一个宏最稳。
-        reply_json(res, "{\"cpp-httplib\":\"" CPPHTTPLIB_VERSION "\",\"webview\":\"" +
-                            std::string(WEBVIEW_VERSION_NUMBER) +
-                            "\",\"cpp-embedlib\":\"main\",\"os\":\"" + std::string(k_os_name) +
-                            "\",\"pid\":" + std::to_string(current_process_id()) +
-                            ",\"uptime_ms\":" + std::to_string(uptime_ms()) + "}");
+        reply_json(res, json{{"cpp-httplib", CPPHTTPLIB_VERSION},
+                             {"webview", WEBVIEW_VERSION_NUMBER},
+                             {"cpp-embedlib", "main"},
+                             {"nlohmann/json",
+                              std::to_string(NLOHMANN_JSON_VERSION_MAJOR) + "." +
+                                  std::to_string(NLOHMANN_JSON_VERSION_MINOR) + "." +
+                                  std::to_string(NLOHMANN_JSON_VERSION_PATCH)},
+                             {"os", k_os_name},
+                             {"pid", current_process_id()},
+                             {"uptime_ms", uptime_ms()}});
     });
 }
 

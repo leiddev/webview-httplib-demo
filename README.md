@@ -2,7 +2,8 @@
 
 [![build](https://github.com/leiddev/webview-httplib-demo/actions/workflows/build.yml/badge.svg)](https://github.com/leiddev/webview-httplib-demo/actions/workflows/build.yml)
 
-用 **cpp-httplib + webview + cpp-embedlib** 搭的最小桌面应用示例（**Windows / Linux** 均已实测，macOS 理论可行但未验证）。
+用 **cpp-httplib + webview + cpp-embedlib** 搭的最小桌面应用示例（JSON 的序列化 / 解析交给
+**nlohmann/json**），**Windows / Linux** 均已实测，macOS 理论可行但未验证。
 
 跑起来之后是一个原生窗口，界面是一个本地 HTML 页面，但它不是从磁盘读的——
 HTML / CSS / JS 全部被 `cpp-embedlib` 编译进了可执行文件，由后台的 `cpp-httplib` 服务器
@@ -67,7 +68,7 @@ tag 名里带连字符的（如 `v0.1.1-rc1`）会自动标成 **Pre-release**�
 
 ```
 webview-httplib-demo/
-├─ CMakeLists.txt          构建脚本（三个依赖全部自动 FetchContent 下载）
+├─ CMakeLists.txt          构建脚本（四个依赖全部自动拉取：三个 git clone + 一个 url 下载）
 ├─ CMakePresets.json       Windows: x64 / x64-console；Linux: linux / linux-debug
 ├─ src/main.cpp            全部 C++ 代码：HTTP 服务 + 路由 + 原生绑定 + 窗口
 ├─ www/                    前端（会被编译进可执行文件）
@@ -95,7 +96,7 @@ webview-httplib-demo/
 ```powershell
 cd C:\Project\webview-httplib-demo
 
-cmake --preset x64          # 配置（首次会 clone 三个库 + 下载 WebView2 SDK，需要几分钟）
+cmake --preset x64          # 配置（首次会拉取四个依赖库 + 下载 WebView2 SDK，需要几分钟）
 cmake --build --preset release
 .\build\Release\webview-demo.exe
 ```
@@ -207,16 +208,18 @@ node --check www/app.js                                   # 前端语法检查
 ```cmake
 cpp_embedlib_add(WebAssets FOLDER ${CMAKE_CURRENT_SOURCE_DIR}/www NAMESPACE Web)  # 生成 Web::FS
 target_link_libraries(webview-demo PRIVATE
-    WebAssets             # 内嵌资源（同时把 C++20 要求传播过来）
-    cpp-embedlib-httplib  # 提供 httplib::mount(svr, Web::FS)
-    httplib::httplib      # HTTP 服务器
-    webview::core)        # webview（header-only；C API 与 C++ API 同一个头文件）
+    WebAssets                     # 内嵌资源（同时把 C++20 要求传播过来）
+    cpp-embedlib-httplib          # 提供 httplib::mount(svr, Web::FS)
+    httplib::httplib              # HTTP 服务器
+    nlohmann_json::nlohmann_json  # JSON 序列化 / 解析
+    webview::core)                # webview（header-only；C API 与 C++ API 同一个头文件）
 ```
 
 ```cpp
 #include "WebAssets.h"             // 由 cpp-embedlib 生成
 #include <cpp-embedlib-httplib.h>  // httplib::mount
 #include <httplib.h>
+#include <nlohmann/json.hpp>       // JSON 序列化 / 解析（header-only）
 #include <webview/webview.h>       // webview 0.12 的 C++ API（header-only）
 
 httplib::mount(svr, Web::FS);                        // 内嵌资源挂到 "/"
@@ -231,6 +234,35 @@ w.navigate(url);                                     // 打开本地地址
 w.run();                                             // 阻塞，直到窗口关闭
 svr.stop(); t.join();
 ```
+
+### JSON 处理：手写转义 → nlohmann/json
+
+改之前 `src/main.cpp` 里有 53 行自己写的 JSON 工具（`json_escape` 转义、`first_json_string`
+解析、`format_number` 数字格式化）外加 8 处字符串拼接。现在这些全部交给 nlohmann/json：
+
+```cpp
+// 之前：拼字符串 + 自己转义，字段顺序要靠人肉维护
+reply_json(res, "{\"you_said\":\"" + json_escape(q) +
+                    "\",\"length\":" + std::to_string(q.size()) + "}");
+
+// 现在：对象一建就完事，转义和格式都是库的事
+reply_json(res, json{{"you_said", q}, {"length", q.size()}});
+```
+
+`src/main.cpp` 里只留了三个小工具，其余全部删掉：
+
+| 工具 | 作用 |
+|---|---|
+| `using json = nlohmann::ordered_json;` | 别名。**用 `ordered_json` 而不是 `nlohmann::json`**：后者的底层是 `std::map`，键会按字母序输出，响应体读起来和以前完全不一样 |
+| `json_text(value)` | 唯一出口，负责 `dump()`。里面固定带 `error_handler_t::replace`（见坑 11） |
+| `first_json_string(args)` | 把 webview 传来的 `["hello"]` 取出第一个字符串，换成 `json::parse(args, nullptr, false)` |
+
+**行为上唯二的区别**（下一次发版会体现）：
+
+1. `/api/add` 返回 `{"a":12.0,"b":30.0,"sum":42.0}` 而不是 `{"a":12,"b":30,"sum":42}`
+   —— 这三个值本来就是 `double`，JSON 库只是没替我们"猜"成整数。想输出整数得自己判一下再塞
+   `long long`，这里故意不判，保持代码简单。
+2. `/api/info` 多了一个 `"nlohmann/json":"3.12.0"` 字段。
 
 ### C API ↔ C++ API 对照
 
@@ -256,7 +288,9 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
 - **构造函数没有默认参数**：必须写全 `webview::webview w(true, nullptr)`，不能只写 `webview::webview w;`。
   构造时若 WebView2 不可用会抛 `webview::exception`，所以整段要包 `try / catch`。
 - **回调签名是 `binding_t`**：`std::function<void(std::string id, std::string args, void* arg)>`，
-  比 C 版的 `const char*` 更省事；`args` 是 JSON 数组字符串，用 `resolve()` 回传（结果必须是合法 JSON）。
+  比 C 版的 `const char*` 更省事；`args` 是 **JSON 数组**字符串（形如 `["hello"]`），
+  用 `resolve()` 回传，而回传的 `result` 也**必须是合法 JSON 文本**——所以这边统一走
+  `json_text(json{...})`，不要直接扔一个裸字符串进去。
 - **没有公开的版本查询函数**：C 的 `webview_version()` 其实就是返回 `webview::detail::library_version_info`，
   C++ 这边没有等价公开接口，所以 `/api/info` 直接用头文件里的公开宏 `WEBVIEW_VERSION_NUMBER`。
 
@@ -293,7 +327,7 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
 3. **`w.init(js)` 注入的脚本只对“之后创建”的文档生效。**
    想让它在首页就生效，必须在 `w.navigate()` **之前**调用，否则第一次加载的页面不会执行它。
 
-4. **首次配置要联网。** 三个库走 `FetchContent`；Windows 上 webview 还会自动从 nuget.org
+4. **首次配置要联网。** 四个库走 `FetchContent`；Windows 上 webview 还会自动从 nuget.org
    拉 `Microsoft.Web.WebView2` SDK（默认 1.0.1150.38）。如果 nuget 不可达：
    手动下载 `Microsoft.Web.WebView2` 的 nupkg 并解压，然后配置时加
    `-DMSWebView2_ROOT=<解压目录>`（目录里要有 `build/native/include/WebView2.h`）。
@@ -331,6 +365,20 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
     行为不变；装了更新的 VS 也不会再报错。代价是一台机器上有多个 VS 时用的是最新的那个，
     要指定就手写 `cmake -S . -B build -G "Visual Studio 17 2022" -A x64`。
 
+11. **nlohmann/json 有三个不看文档就会踩的地方**（这条是引入它的时候实测出来的）：
+    - **默认的 `nlohmann::json` 会把键按字母序输出**（底层是 `std::map`），响应体一下子
+      全变了样。要保留插入顺序必须用 **`nlohmann::ordered_json`**。
+    - **`dump()` 默认会对非法 UTF-8 抛 `type_error.316`**。一个
+      `GET /api/echo?q=%FF%FE` 就能把处理器抛进 500。要传
+      `dump(-1, ' ', false, error_handler_t::replace)`，把坏字节换成 U+FFFD——
+      输出反而是**合法** JSON（手写 `json_escape` 那时候是直接吐非法字节）。
+    - **`double` 一律输出成 `42.0`**：`j["sum"] = 42.0` 不会变成 `42`。这不是 bug，
+      是「库不替你猜」。想要整数就自己判一下塞 `long long`。
+    另外 `FetchContent` 用的是 `include.zip` 而不是官方推荐的 `json.tar.xz`：
+    后者带一份它自己的 `CMakeLists.txt`，而 `include.zip` 里只有头文件，我们包一个
+    INTERFACE 目标就好，不用把第三方的构建脚本拉进来；顺手配了 `URL_HASH`，
+    上游哪天换了 asset 会当场报错而不是悄悄编过。
+
 ## 接口一览
 
 | 方法 | 路径 | 说明 |
@@ -338,10 +386,10 @@ C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
 | GET | `/`、`/style.css`、`/app.js` | 内嵌前端资源（html/css/js 的 MIME 自动识别） |
 | GET | `/api/hello` | 返回问候语 + 服务器时间 |
 | GET | `/api/time` | 本地时间 + 进程运行毫秒数 |
-| GET | `/api/info` | cpp-httplib / webview / cpp-embedlib 版本、操作系统、PID、运行时长 |
+| GET | `/api/info` | 各库版本（cpp-httplib / webview / cpp-embedlib / nlohmann-json）、操作系统、PID、运行时长 |
 | GET | `/api/assets` | 列出被 cpp-embedlib 内嵌的文件 |
 | GET | `/api/echo?q=...` | 回显参数 |
-| POST | `/api/add` | 表单 `a=..&b=..`，返回和 |
+| POST | `/api/add` | 表单 `a=..&b=..`，返回和（`double`，所以是 `42.0` 不是 `42`） |
 
 JS → C++ 绑定：`cppNativeEcho(text)`、`cppNativeHandle()`、`cppCloseWindow()`。
 
@@ -427,15 +475,15 @@ WebView2 Runtime 153.0.4234.48
 **Linux**：Ubuntu 22.04.1 LTS（kernel 6.8，无显示器）· GCC 11.4.0 · CMake 3.22.1 · Ninja ·
 WebKitGTK 2.50.4（`webkit2gtk-4.1`）+ GTK 3.24.33 + libsoup3 · Xvfb
 
-依赖版本：cpp-httplib v0.38.0 · webview 0.12.0 · cpp-embedlib main
+依赖版本：cpp-httplib v0.38.0 · webview 0.12.0 · cpp-embedlib main · nlohmann/json 3.12.0
 
 ### Windows 实测记录
 
-`build\Release\webview-demo.exe`，编译 0 警告，约 470 KB：
+`build\Release\webview-demo.exe`，编译 0 警告，约 548 KB：
 
 - 窗口类名 `webview`、客户区 1080×780、标题与 `set_title()` 一致 → 构造 / `set_size` / `set_title` 生效；
 - 服务端日志里先出现 `GET /`、`GET /style.css`、`GET /app.js`（是**窗口自己**来拉的）→ `navigate` 生效、页面渲染成功；
-- 全部 7 个接口 200，`POST /api/add` 返回 `{"a":3,"b":4,"sum":7}`；
+- 全部 7 个接口 200，`POST /api/add` 返回 `{"a":3.0,"b":4.0,"sum":7.0}`（`double` 的原样输出，见「JSON 处理」）；
 - 注入脚本串起三个绑定：`cppNativeEcho` 返回 `{"source":"webview::bind → C++",…}`、
   `cppNativeHandle` 返回 `HWND = 0x…`、`cppCloseWindow` 之后进程自行退出（ExitCode=0）→
   `bind` / `resolve` / `window` / `terminate` 与 RAII 析构都正常。
@@ -448,7 +496,7 @@ WebKitGTK 2.50.4（`webkit2gtk-4.1`）+ GTK 3.24.33 + libsoup3 · Xvfb
 - **configure 9 秒**，webview 自动选中 `webkit2gtk-4.1` 2.50.4 + `gtk+-3.0` 3.24.33 + libsoup3；
 - **build 17 秒、0 警告**，产出 786,792 字节 ELF，链接 `libwebkit2gtk-4.1` / `libjavascriptcoregtk-4.1`；
   cpp-embedlib 在 Linux 上正常生成 `_data_index_html` / `_data_app_js` / `_data_style_css` → `libWebAssets.a`；
-- 用 Xvfb 无头运行：7 个接口全 200，`POST /api/add` 返回 `{"a":12,"b":30,"sum":42}`；
+- 用 Xvfb 无头运行：7 个接口全 200，`POST /api/add` 返回 `{"a":12.0,"b":30.0,"sum":42.0}`；
   日志最前面是**窗口自己**发起的 `/`、`/style.css`、`/app.js`、`/api/info` → GTK + WebKitGTK 渲染链路通；
 - JS→C++ 桥在 GTK 后端同样正常：`cppNativeEcho`（中文正常）、
   `cppNativeHandle` 返回 `GtkWidget * = 0x60C7D2C8C290`、`cppCloseWindow` 之后进程自行退出（exit code 0）；
