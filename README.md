@@ -6,6 +6,10 @@
 HTML / CSS / JS 全部被 `cpp-embedlib` 编译进了 exe，由后台的 `cpp-httplib` 服务器
 从内存里发出来，窗口本身由 `webview` 创建（内核是 Edge WebView2）。
 
+webview 用的是 **0.12.0 的 C++ API**（`webview::webview w(true, nullptr)` 加
+`set_title` / `set_size` / `bind` / `navigate` / `run`，靠 RAII 析构销毁窗口）；
+同一个头文件里 C API 依然存在，两者的对应关系见下面「C API ↔ C++ API 对照」。
+
 ```
 ┌──────────────────────────────────────────────┐
 │  webview 窗口 (WebView2)                     │
@@ -20,7 +24,7 @@ HTML / CSS / JS 全部被 `cpp-embedlib` 编译进了 exe，由后台的 `cpp-ht
 │  │  └──────────────────────────┘          │  │
 │  │                                        │  │
 │  │  window.cppNativeXxx()                 │  │
-│  │        │  webview_bind（不走 HTTP）     │  │
+│  │        │  webview::bind（不走 HTTP）    │  │
 │  │        ▼                               │  │
 │  │  C++ 函数（同一进程，主线程）            │  │
 │  └────────────────────────────────────────┘  │
@@ -96,7 +100,7 @@ cmake --build --preset console-release
 | 区域 | 演示内容 | 涉及技术 |
 |---|---|---|
 | ① HTTP API | `fetch` 调用 `/api/hello`、`/api/time`、`/api/info`、`/api/assets`、`/api/echo`、`POST /api/add` | cpp-httplib |
-| ② 原生调用 | `cppNativeEcho()`、`cppNativeHandle()`、`cppCloseWindow()`，**不经过 HTTP** | webview `webview_bind` |
+| ② 原生调用 | `cppNativeEcho()`、`cppNativeHandle()`、`cppCloseWindow()`，**不经过 HTTP** | webview `webview::bind` |
 | ③ 通信日志 | 每次请求/响应的原始 JSON | 前端 JS |
 
 `GET /api/assets` 会列出被内嵌进 exe 的文件（路径 / MIME / 字节数），可以直观看到
@@ -139,19 +143,48 @@ target_link_libraries(webview-demo PRIVATE
 #include "WebAssets.h"             // 由 cpp-embedlib 生成
 #include <cpp-embedlib-httplib.h>  // httplib::mount
 #include <httplib.h>
-#include <webview/webview.h>       // webview（本项目只用其中的 C API）
+#include <webview/webview.h>       // webview 0.12 的 C++ API（header-only）
 
 httplib::mount(svr, Web::FS);                        // 内嵌资源挂到 "/"
 int port = svr.bind_to_any_port("127.0.0.1");        // 随机空闲端口
 std::thread t([&] { svr.listen_after_bind(); });     // 后台线程跑服务
 
-webview_t w = webview_create(1, nullptr);            // 必须主线程
-webview_bind(w, "cppNativeEcho", &on_native_echo, nullptr);
-webview_navigate(w, url.c_str());                    // 打开本地地址
-webview_run(w);                                      // 阻塞，直到窗口关闭
-webview_destroy(w);
+webview::webview w(true /* debug */, nullptr);       // 必须主线程；析构即销毁窗口
+w.set_title("...");
+w.set_size(1080, 780, WEBVIEW_HINT_NONE);
+w.bind("cppNativeEcho", &on_native_echo, nullptr);   // JS → C++（不走 HTTP）
+w.navigate(url);                                     // 打开本地地址
+w.run();                                             // 阻塞，直到窗口关闭
 svr.stop(); t.join();
 ```
+
+### C API ↔ C++ API 对照
+
+两套接口在同一个头文件里，本项目用的是右边那列：
+
+| 功能 | C API | C++ API |
+|---|---|---|
+| 创建 / 销毁 | `webview_create(1, nullptr)` / `webview_destroy(w)` | `webview::webview w(true, nullptr);`（RAII，析构自动销毁） |
+| 标题 / 尺寸 | `webview_set_title` / `webview_set_size` | `w.set_title(...)` / `w.set_size(1080, 780, WEBVIEW_HINT_NONE)` |
+| 打开页面 | `webview_navigate` | `w.navigate(url)` |
+| 直接塞 HTML | `webview_set_html` | `w.set_html(html)` |
+| JS → C++ | `webview_bind(w, "name", fn, arg)` | `w.bind("name", fn, nullptr)` |
+| 回传结果 | `webview_return(w, id, 0, json)` | `w.resolve(id, 0, json)` |
+| 注入脚本 | `webview_init(w, js)` | `w.init(js)` |
+| 执行脚本 | `webview_eval(w, js)` | `w.eval(js)` |
+| 投递到 UI 线程 | `webview_dispatch(w, fn, arg)` | `w.dispatch(fn)` |
+| 取原生句柄 | `webview_get_window(w)` | `w.window()`（返回 `result<void*>`，要判 `.ok()`） |
+| 主循环 / 结束 | `webview_run(w)` / `webview_terminate(w)` | `w.run()` / `w.terminate()` |
+| 错误处理 | 返回 `webview_error_t`，`webview_create` 失败返回 `nullptr` | 抛 `webview::exception`；`noresult` / `result<T>` 可用 `.ok()` / `.ensure_ok()` |
+
+C++ 侧的三个额外注意点（都在 `src/main.cpp` 里体现了）：
+
+- **构造函数没有默认参数**：必须写全 `webview::webview w(true, nullptr)`，不能只写 `webview::webview w;`。
+  构造时若 WebView2 不可用会抛 `webview::exception`，所以整段要包 `try / catch`。
+- **回调签名是 `binding_t`**：`std::function<void(std::string id, std::string args, void* arg)>`，
+  比 C 版的 `const char*` 更省事；`args` 是 JSON 数组字符串，用 `resolve()` 回传（结果必须是合法 JSON）。
+- **没有公开的版本查询函数**：C 的 `webview_version()` 其实就是返回 `webview::detail::library_version_info`，
+  C++ 这边没有等价公开接口，所以 `/api/info` 直接用头文件里的公开宏 `WEBVIEW_VERSION_NUMBER`。
 
 ## 需要注意的几个坑（都实测踩过）
 
@@ -174,17 +207,17 @@ svr.stop(); t.join();
    更关键的是**依赖方向**：C API 是包在这套 C++ 类外面的薄壳——
    `webview_create()` 就是 `new webview::webview{...}`，其余 C 函数清一色转发到成员函数（webview.h:4389 起）。
 
-   两种写法都能用、都编得过。
+   两种写法都能用、都编得过；本项目原来用 C API，现已按对照表整体换成 C++ API。
    顺带一个教训：**判断某个 API 是否还在，不能只搜 `class X`**——别名（`using`）和宏同样可能是入口。
 
-2. **webview 的 C API 必须在 UI 线程调用。**
-   `webview_eval` / `webview_terminate` 之类不会自动切线程——在子线程里调用会“返回成功但毫无效果”
+2. **webview 必须在 UI 线程调用（C API / C++ API 都一样）。**
+   `eval` / `terminate` 这类调用不会自动切线程——在子线程里调用会“返回成功但毫无效果”
    （底层 `ICoreWebView2::ExecuteScript` 只能在 UI 线程跑）。
-   子线程要操作窗口，用 `webview_dispatch(w, fn, arg)` 投递到主线程；
-   `webview_bind` 注册的回调本身就是在主线程执行的，可以直接调用这些函数。
+   子线程要操作窗口，用 `w.dispatch(fn)`（C 版是 `webview_dispatch`）投递到主线程；
+   `w.bind()` 注册的回调本身就是在主线程执行的，可以直接调用这些成员函数。
 
-3. **`webview_init()` 注入的脚本只对“之后创建”的文档生效。**
-   想让它在首页就生效，必须在 `webview_navigate()` **之前**调用，否则第一次加载的页面不会执行它。
+3. **`w.init(js)` 注入的脚本只对“之后创建”的文档生效。**
+   想让它在首页就生效，必须在 `w.navigate()` **之前**调用，否则第一次加载的页面不会执行它。
 
 4. **首次配置要联网。** 三个库走 `FetchContent`；Windows 上 webview 还会自动从 nuget.org
    拉 `Microsoft.Web.WebView2` SDK（默认 1.0.1150.38）。如果 nuget 不可达：
@@ -221,3 +254,12 @@ JS → C++ 绑定：`cppNativeEcho(text)`、`cppNativeHandle()`、`cppCloseWindo
 
 Windows 10 22H2 (19045) x64 · VS2022 Community 17.14 · MSVC 14.44 · CMake 4.3.0 / VS 自带 3.31.6 ·
 WebView2 Runtime 153.0.4234.48 · cpp-httplib v0.38.0 · webview 0.12.0 · cpp-embedlib main
+
+换成 C++ API 后的实测记录（`build\Release\webview-demo.exe`，编译 0 警告，约 470 KB）：
+
+- 窗口类名 `webview`、客户区 1080×780、标题与 `set_title()` 一致 → 构造 / `set_size` / `set_title` 生效；
+- 服务端日志里先出现 `GET /`、`GET /style.css`、`GET /app.js`（是**窗口自己**来拉的）→ `navigate` 生效、页面渲染成功；
+- 全部 7 个接口 200，`POST /api/add` 返回 `{"a":3,"b":4,"sum":7}`；
+- 注入脚本串起三个绑定：`cppNativeEcho` 返回 `{"source":"webview::bind → C++",…}`、
+  `cppNativeHandle` 返回 `HWND = 0x…`、`cppCloseWindow` 之后进程自行退出（ExitCode=0）→
+  `bind` / `resolve` / `window` / `terminate` 与 RAII 析构都正常。

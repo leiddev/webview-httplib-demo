@@ -7,7 +7,7 @@
 //       │  WebView2 载入 http://127.0.0.1:<port>     │
 //       └──────────────► GET /            ────────►  cpp-embedlib 内嵌资源
 //       │                GET /api/*       ────────►  cpp-httplib 处理
-//       └── webview_bind ──────────────────────────► 直接调用 C++ 函数（不经 HTTP）
+//       └── webview::bind ─────────────────────────► 直接调用 C++ 函数（不经 HTTP）
 //
 // ---------------------------------------------------------------------------
 #include "WebAssets.h"  // cpp-embedlib 生成的：Web::FS
@@ -15,7 +15,7 @@
 #include <cpp-embedlib-httplib.h>  // httplib::mount(svr, Web::FS)
 #include <httplib.h>               // cpp-httplib
 
-#include <webview/webview.h>  // webview 0.12 的 C API（header-only）
+#include <webview/webview.h>  // webview 0.12 的 C++ API（header-only）
 
 #include <cctype>
 #include <chrono>
@@ -36,7 +36,7 @@ namespace {
 
 // --------------------------------------------------------------- 全局状态 --
 const auto g_started_at = std::chrono::steady_clock::now();
-webview_t g_webview = nullptr;  // webview_bind 回调里要用它回传结果
+webview::webview* g_webview = nullptr;  // webview::bind 回调里要用它回传结果
 
 // ---------------------------------------------------------------- 小工具 ----
 void log_line(const std::string& msg) {
@@ -105,7 +105,7 @@ void reply_json(httplib::Response& res, std::string body, int status = 200) {
     res.set_content(std::move(body), "application/json; charset=utf-8");
 }
 
-// 取 webview_bind 收到的 JSON 数组参数里的第一个字符串
+// 取 webview::bind 收到的 JSON 数组参数里的第一个字符串
 // （示例够用：req 形如 ["hello"]）
 std::string first_json_string(std::string_view json) {
     const auto pos = json.find('"');
@@ -157,13 +157,17 @@ std::string format_number(double v) {
     return buf;
 }
 
-// ------------------------------------------------- webview_bind 回调（C++）--
+// -------------------------------------------------- webview::bind 回调（C++）--
 // 这些函数由 JavaScript 直接调用，完全不走 HTTP。
+// 回调签名就是 webview::engine_base::binding_t：
+//     std::function<void(std::string id, std::string args, void *arg)>
+// 处理完用 resolve(id, status, result) 把结果回传给 JS 的 Promise
+// （对应 C API 的 webview_return；result 需是合法 JSON，普通字符串要带引号）。
 
 // JS: cppNativeEcho("...") —— 把文本交给 C++ 处理后再返回
-void on_native_echo(const char* id, const char* req, void*) {
-    const std::string text = first_json_string(req ? req : "");
-    const std::string result = "{\"source\":\"webview_bind → C++\",\"echo\":\"" +
+void on_native_echo(std::string id, std::string req, void*) {
+    const std::string text = first_json_string(req);
+    const std::string result = "{\"source\":\"webview::bind → C++\",\"echo\":\"" +
                                json_escape(text) + "\",\"chars\":" + std::to_string(text.size()) +
                                ",\"upper\":\"" + json_escape([&] {
         std::string u = text;
@@ -173,22 +177,26 @@ void on_native_echo(const char* id, const char* req, void*) {
         return u;
     }()) + "\",\"time\":\"" + local_time_string() +
                                "\"}";
-    webview_return(g_webview, id, 0, result.c_str());
+    g_webview->resolve(id, 0, result);
 }
 
 // JS: cppNativeHandle() —— 拿到原生 HWND，演示 JS 与原生窗口互操作
-void on_native_handle(const char* id, const char*, void*) {
-    const auto hwnd = reinterpret_cast<std::uintptr_t>(webview_get_window(g_webview));
+void on_native_handle(std::string id, std::string, void*) {
+    // C API 是 webview_get_window()；C++ 这边返回 result<void*>，要判一下
+    std::uintptr_t hwnd = 0;
+    if (const auto handle = g_webview->window(); handle.ok()) {
+        hwnd = reinterpret_cast<std::uintptr_t>(handle.value());
+    }
     char buf[96];
-    std::snprintf(buf, sizeof(buf), "\"HWND = 0x%llX（由 webview_get_window 取得）\"",
+    std::snprintf(buf, sizeof(buf), "\"HWND = 0x%llX（由 webview::window() 取得）\"",
                   static_cast<unsigned long long>(hwnd));
-    webview_return(g_webview, id, 0, buf);
+    g_webview->resolve(id, 0, buf);
 }
 
-// JS: cppCloseWindow() —— 关闭窗口（结束 webview_run 的消息循环）
-void on_close_window(const char* id, const char*, void*) {
-    webview_return(g_webview, id, 0, "\"closing...\"");
-    webview_terminate(g_webview);
+// JS: cppCloseWindow() —— 关闭窗口（结束 webview::run() 的消息循环）
+void on_close_window(std::string id, std::string, void*) {
+    g_webview->resolve(id, 0, "\"closing...\"");
+    g_webview->terminate();  // C API: webview_terminate()
 }
 
 // ------------------------------------------------------------------ 路由 ----
@@ -246,9 +254,10 @@ void register_api(httplib::Server& svr) {
 
     // ---- GET /api/info —— 三个库的版本信息 -------------------------------
     svr.Get("/api/info", [](const httplib::Request&, httplib::Response& res) {
-        const webview_version_info_t* wv = webview_version();
+        // C 的 webview_version() 只是返回 webview::detail::library_version_info
+        // （见 webview.h:4552）；C++ 这边没有等价的公开函数，用同一个宏最稳。
         reply_json(res, "{\"cpp-httplib\":\"" CPPHTTPLIB_VERSION "\",\"webview\":\"" +
-                            std::string(wv ? wv->version_number : "?") +
+                            std::string(WEBVIEW_VERSION_NUMBER) +
                             "\",\"cpp-embedlib\":\"main\",\"pid\":" +
                             std::to_string(
 #ifdef _WIN32
@@ -306,27 +315,34 @@ int main(int argc, char** argv) {
     const std::string url = "http://127.0.0.1:" + std::to_string(port) + "/";
     log_line("HTTP 服务已启动: " + url);
 
-    // ---- 3. 原生窗口：webview（C API）-----------------------------------
-    g_webview = webview_create(1 /* debug=1: 开启右键 DevTools */, nullptr);
-    if (!g_webview) { fatal("webview_create 失败（请确认已安装 WebView2 运行时）"); }
+    // ---- 3. 原生窗口：webview（C++ API）---------------------------------
+    // 对象放栈上，析构即销毁窗口 / 释放 WebView2（相当于 C API 的 webview_destroy）。
+    // 构造与运行都可能抛 webview::exception，所以整段包在 try 里。
+    try {
+        webview::webview w(/* debug = */ true, /* parent window = */ nullptr);
+        g_webview = &w;  // 回调里要通过它 resolve / terminate
 
-    webview_set_title(g_webview, "cpp-httplib + webview + cpp-embedlib Demo");
-    webview_set_size(g_webview, 1080, 780, WEBVIEW_HINT_NONE);
+        w.set_title("cpp-httplib + webview + cpp-embedlib Demo");
+        w.set_size(1080, 780, WEBVIEW_HINT_NONE);
 
-    // JS → C++ 的三个绑定
-    webview_bind(g_webview, "cppNativeEcho", &on_native_echo, nullptr);
-    webview_bind(g_webview, "cppNativeHandle", &on_native_handle, nullptr);
-    webview_bind(g_webview, "cppCloseWindow", &on_close_window, nullptr);
+        // JS → C++ 的三个绑定（回调统一是 binding_t 签名）
+        w.bind("cppNativeEcho", &on_native_echo, nullptr);
+        w.bind("cppNativeHandle", &on_native_handle, nullptr);
+        w.bind("cppCloseWindow", &on_close_window, nullptr);
 
-    // 让窗口载入本机 HTTP 服务（同源，前端可直接 fetch("/api/...")）
-    webview_navigate(g_webview, url.c_str());
+        // 让窗口载入本机 HTTP 服务（同源，前端可直接 fetch("/api/...")）
+        w.navigate(url);
 
-    webview_run(g_webview);  // 阻塞：直到窗口关闭
+        w.run();  // 阻塞：直到窗口关闭
+
+        g_webview = nullptr;
+    } catch (const webview::exception& e) {
+        g_webview = nullptr;
+        fatal(std::string("webview 初始化/运行失败: ") + e.what() +
+              "（请确认已安装 WebView2 运行时）");
+    }
 
     // ---- 4. 收尾 ---------------------------------------------------------
-    webview_destroy(g_webview);
-    g_webview = nullptr;
-
     svr.stop();
     if (server_thread.joinable()) { server_thread.join(); }
 
