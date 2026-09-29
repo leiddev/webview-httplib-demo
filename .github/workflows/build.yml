@@ -12,18 +12,21 @@ on:
 jobs:
   # ---------------------------------------------------------------- Windows --
   windows:
-    name: VS2022 x64 Release
+    name: Windows x64 Release
     runs-on: windows-latest
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 环境信息
         run: |
           cmake --version
           git --version
 
+      # 预设里刻意不写死 Visual Studio 版本，跟随 runner 上默认（最新）的 VS：
+      # windows-latest 现在已经只有 VS2026，写死 "Visual Studio 17 2022" 会直接报
+      # 「could not find any instance of Visual Studio」。
       - name: 配置（会自动拉取 cpp-httplib / webview / cpp-embedlib / WebView2 SDK）
         run: cmake --preset x64
 
@@ -37,7 +40,7 @@ jobs:
         shell: pwsh
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: webview-demo-win-x64
           path: build/Release/webview-demo.exe
@@ -50,7 +53,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Linux 上 webview 会在 configure 阶段就要求 pkg-config + GTK + WebKitGTK；
       # xvfb 是为了后面能无头启动 GUI 做冒烟测试。
@@ -117,7 +120,7 @@ jobs:
           pkill -x webview-demo 2>/dev/null || true
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: webview-demo-linux-x64
           path: build-linux/webview-demo
