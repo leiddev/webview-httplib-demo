@@ -510,7 +510,7 @@ WebKitGTK 2.50.4（`webkit2gtk-4.1`）+ GTK 3.24.33 + libsoup3 · Xvfb
 ### Windows 实测记录
 
 `build\Release\webview-demo.exe`，编译 0 警告，**562,176 字节**（CI 的 `windows-latest` 是 VS2026，
-编出来 568,832 字节）：
+编出来 568,320 字节）：
 
 - 窗口类名 `webview`、客户区 1080×780、标题与 `set_title()` 一致 → 构造 / `set_size` / `set_title` 生效；
 - 服务端日志里先出现 `GET /`、`GET /style.css`、`GET /app.js`（是**窗口自己**来拉的）→ `navigate` 生效、页面渲染成功；
